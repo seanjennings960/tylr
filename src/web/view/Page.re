@@ -318,10 +318,19 @@ let source_toolbar = (~inject, model: Model.t) => {
 };
 
 let page_view = (~inject, ~stored, model: Model.t) => {
-  let copy_current = () =>
+  let copy_current = evt =>
     switch (model.source) {
-    | None => copy(model.zipper.cur)
-    | Some(source) => Util.Dom.copy(source.selected_text)
+    | None =>
+      copy(model.zipper.cur);
+      Effect.Ignore;
+    | Some(source) =>
+      /* Avoid the native textarea shim: it normalizes source line endings. */
+      let _ = evt##.clipboardData##setData(
+        Js_of_ocaml.Js.string("text/plain"),
+        Js_of_ocaml.Js.string(source.selected_text),
+      );
+      Js_of_ocaml.Dom.preventDefault(evt);
+      Effect.Prevent_default;
     };
   div(
     ~attrs=
@@ -338,14 +347,14 @@ let page_view = (~inject, ~stored, model: Model.t) => {
           Util.Dom.focus_clipboard_shim();
           Effect.Ignore;
         }),
-        Attr.on_copy(_ => {
-          copy_current();
-          Effect.Ignore;
-        }),
-        Attr.on_cut(_ => {
-          copy_current();
-          Option.is_some(model.source)
-            ? Effect.Prevent_default : inject(Update.PerformAction(Delete(L)));
+        Attr.on_copy(copy_current),
+        Attr.on_cut(evt => {
+          switch (model.source) {
+          | Some(_) => copy_current(evt)
+          | None =>
+            copy(model.zipper.cur);
+            inject(Update.PerformAction(Delete(L)));
+          };
         }),
         Attr.on_paste(evt => {
           Js_of_ocaml.Dom.preventDefault(evt);
