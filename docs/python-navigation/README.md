@@ -113,16 +113,18 @@ navigation, cross-tree ranges, exact copy-event text, Unicode/CRLF preservation,
 read-only behavior, invalid-source status and returning to the native editor.
 It captures screenshots in the `tylr-browser-evidence` artifact.
 
-### Publication checkpoint
+### Connector authorization
 
-The complete implementation is committed locally. The remote feature branch
-currently ends at `789d6ce0` and contains the initial CI workflow plus server
-implementation and tests. The browser security review subsequently rejected
-the source-client upload, reporting that permission was declined. Publishing
-stopped there. The editor integration, client tests, browser test, updated CI
-workflow and documentation still need publishing before feature CI can run.
-The local and browser-authored histories have different commit IDs; compare
-their trees or apply the remaining changes without overwriting the remote work.
+The initial GitHub API write failed because the ChatGPT Codex Connector used a
+selected-repository installation that did not include the newly created fork.
+Public reads still worked, which did not imply permission to write. The user
+approved adding only `seanjennings960/tylr` to that installation; normal connector
+writes then succeeded without changing browser-upload approval settings.
+
+Early CI/server slices were published through GitHub's browser UI. The remaining
+small commits use the GitHub connector and preserve those earlier commits. The
+local implementation history and the published history consequently have different
+commit IDs; their final source trees are checked for equality before verification.
 
 ## GNHF and implementation history
 
