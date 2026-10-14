@@ -1,77 +1,54 @@
-# General notes on github actions: Note that both the working directory
-# and environment variables generally are not shared between steps.
-name: deploy tylr
-on: [push]
+name: verify tylr
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  Deploy:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
-      # NOTE: position the below lines in the code between two steps
-      # and uncomment them to open an ssh connection at that point:
-      #- name: Debugging with ssh
-      #  uses: lhotari/action-upterm@v1
-      - name: Checkout tylr repo on current branch # STEP 1
-        uses: actions/checkout@v2
-        with:
-          path: source
-      - name: Add name of current branch to environment as BRANCH_NAME
-        uses: nelonoel/branch-name@v1.0.1
-      - name: Set-up OCaml
-        uses: ocaml/setup-ocaml@v3
+      - uses: actions/checkout@v4
+      - uses: ocaml/setup-ocaml@v3
         with:
           ocaml-compiler: 5.0.0
           dune-cache: true
-      - name: Retrieve the switch environment if cached
-        id: opam-cache-switch
-        uses: actions/cache@v4
+      - name: Install pinned dependencies
+        run: |
+          opam repository add archive git+https://github.com/ocaml/opam-repository-archive
+          opam switch import opam.export --yes
+      - name: Build editor
+        run: opam exec -- dune build src --profile release
+      - name: Test existing editor
+        run: opam exec -- dune runtest --force
+      - name: Upload runnable editor
+        uses: actions/upload-artifact@v4
         with:
-          path: "_opam"
-          key: ${{ runner.os }}-modules-${{ hashFiles('./source/opam.export') }}
-      - name: Add opam repository archive
-        run: |
-          eval $(opam env)
-          export OPAMYES=1
-          opam repo add archive git+https://github.com/ocaml/opam-repository-archive
-      - name: Install dependencies
-        run: |
-          eval $(opam env)
-          export OPAMYES=1
-          export DUNE_CACHE=enabled
-          # opam install . --deps-only --with-test --locked
-          make deps
-        working-directory: ./source
-      - name: Clean opam switch
-        run: |
-          eval $(opam env)
-          export OPAMYES=1
-          opam clean --all-switches --download-cache --logs --repo-cache --unused-repositories
-      - name: Build Release
-        run: |
-          export DUNE_CACHE=enabled
-          opam exec -- dune build @src/fmt --auto-promote src --profile release
-        working-directory: ./source
-      - name: Checkout website build artifacts repo # STEP 4
-        uses: actions/checkout@v2
+          name: tylr-web
+          path: _build/default/src/web/www/
+          if-no-files-found: error
+  protocol:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          repository: hazelgrove/tylr-build
-          token: ${{ secrets.DEPLOY_TYLR }}
-          path: server
-      - name: Clear any old build of this branch # STEP 5
-        run: if [ -d "${BRANCH_NAME}" ] ; then rm -rf "${BRANCH_NAME}" ; fi
-        working-directory: ./server
-      - name: Copy in newly built source # STEP 6
-        run: |
-          mkdir "./server/${BRANCH_NAME}" &&
-          cp -r "./source/_build/default/src/web/www"/* "./server/${BRANCH_NAME}" &&
-          if [ "${BRANCH_NAME}" == "plus" ]
-          then
-            cp -r "./source/_build/default/src/web/www"/* "./server"
-          fi
-      - name: Commit to website aka deploy # STEP 7
-        run: |
-          git config user.name github-deploy-action
-          git config user.email tylr-deploy@hazel.org
-          git add -A
-          git status
-          git diff-index --quiet HEAD || (git commit -m "github-deploy-action-${BRANCH_NAME}"; git push)
-        working-directory: ./server
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Python language server tests
+        run: python -m unittest discover -s server -p 'test_*.py' -v
+      - name: Generic navigation tests
+        run: node --test test/source-client*.mjs
+      - run: git diff --check
