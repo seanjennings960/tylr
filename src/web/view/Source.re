@@ -5,13 +5,13 @@ open Tylr_core;
 
 let text_segment = (s: Model.Source.segment) =>
   Node.span(
-    ~attrs=Attr.[
-      classes(
+    ~attrs=[
+      Attr.classes(
         ["source-segment"]
         @ (s.selected ? ["source-selected"] : [])
         @ (s.active ? ["source-active"] : []),
       ),
-      create("data-source-start", string_of_int(s.start)),
+      Attr.create("data-source-start", string_of_int(s.start)),
     ],
     [Node.text(s.text)],
   );
