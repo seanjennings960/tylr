@@ -1,95 +1,127 @@
-# Python structural navigation run
+# Python navigation in Tylr
 
-## Objective
+This branch adds a read-only, source-preserving Python navigation mode to the
+existing Tylr application. Open a source file, move by tokens or structure, and
+select ranges that cross tree boundaries. Python parsing and tokenization live
+in a separate language server; the source-mode editor understands generic ranges
+and relationships.
 
-Add Python token/tile navigation to the existing Tylr application. Keep Python
-parsing, recovery, indentation interpretation, tokenization, and concrete-syntax
-projection behind a Language Server Protocol boundary. Preserve original source.
-The editor should understand generic ranges and relationships, not Python syntax.
+## Run locally
 
-The complete worker objective and acceptance criteria are in
-[gnhf-prompt.md](gnhf-prompt.md).
+Requirements: Python 3.10 or later and a normal OCaml/opam build environment.
+The repository's `opam.export` pins OCaml 5.0.0 and dune 3.17.2; the original
+README's OCaml 4.08.1 instructions are outdated.
 
-## Current status: prepared, implementation blocked
-
-On 2026-10-14, the host created the fork `seanjennings960/tylr`, cloned upstream
-`melds` at `1543f29f87db20bdd94bc9fa82df5c8142ae73e7`, and loaded the upstream
-[GNHF skill](https://github.com/kunchenguid/gnhf/tree/main/skills/gnhf).
-GNHF 0.1.51 ran in Companion mode using Codex CLI 0.159.2 and created the branch
-`gnhf/objective-implement-67097f`.
-
-The worker produced no JSONL events or token usage before the host's three-minute
-startup watchdog stopped the run. GNHF reported zero successful iterations,
-zero implementation commits, and zero changed files. Its final status was
-`stopped`; the completion condition was not met. Independent minimal Codex CLI
-startup checks also timed out. The CLI reported an existing ChatGPT login, but
-that is not evidence of a functioning model request. The cause remains unknown.
-
-The build environment has a second blocker: ordinary opam sandbox initialization
-failed with `bwrap: Creating new namespace failed: Operation not permitted`.
-No OCaml switch or project dependencies were installed. No tests, build, or UI
-acceptance checks have passed in this environment.
-
-These two files are host-authored run preparation, not a completed GNHF iteration
-or a Python navigation implementation. The local GNHF metadata remains under
-`.gnhf/runs/objective-implement-67097f/` and is ignored by Git. No credentials or
-machine-specific authentication configuration belong in the repository.
-
-## Architecture constraints established during research
-
-- Core `Sort` and `Grammar` virtual modules are implemented by `src/hazel`, but
-  `Labeler.re` and layout still contain language-specific behavior.
-- The integration should reach `Model.re`, `Update.re`, `Page.re`, and `Code.re`:
-  the existing application's document, action, input, and render pipeline.
-- Existing layout synthesizes indentation and navigation can call whitespace
-  repair. Neither should change imported Python source.
-- ChatLSP's contextual-assistance methods do not specify a structural graph.
-  A namespaced, capability-negotiated LSP extension is acceptable; it must be
-  documented as custom. Standard `selectionRange` only supplies ancestor chains.
-- Preserve anchor/focus ranges independently of AST-node selection so selections
-  such as `2 + 3` and `* 4` inside `2 + 3 * 4` remain possible.
-- Validate UTF-16 wire coordinates, original-source mapping, tree invariants,
-  response versions, server generations, and explicit degraded states.
-
-## Continue in a working execution environment
-
-Use a clean checkout of this feature branch with an authenticated, functioning
-coding CLI and an OCaml build environment. Read `gnhf --help` and the GNHF skill
-before relying on flags. Configure the chosen agent through GNHF's supported
-configuration; retain the environment's normal permission and sandbox controls.
-
-`opam.export` pins OCaml 5.0.0 and dune 3.17.2. The older README's reference to
-OCaml 4.08.1 is stale. The upstream CI also adds the opam repository archive.
-Install the pinned dependencies in an environment that supports their ordinary
-build sandbox, then establish baseline evidence with:
+From the repository root, create a dedicated switch and build:
 
 ```sh
-opam exec -- dune build src --profile dev
+opam switch create tylr-python ocaml-base-compiler.5.0.0
+opam repository add archive git+https://github.com/ocaml/opam-repository-archive
+opam switch import opam.export --switch=tylr-python --yes
+opam exec --switch=tylr-python -- dune build src --profile release
+python3 -m server --http --port 8765 --www _build/default/src/web/www
+```
+
+Open <http://127.0.0.1:8765>, leave **Language ID** set to `python`, and click
+**Open source…** to choose a local file. The file's text is sent to the local
+server; a document URI does not authorize the server to read files from disk.
+Use **Native editor** to return to Tylr's existing Hazel editor.
+
+The editor must be served over local HTTP, as above. Once CI succeeds, its
+`tylr-web` artifact can replace the OCaml build step: extract it and point
+`--www` at the directory containing `index.html`.
+
+## Navigation
+
+| Input | Action |
+| --- | --- |
+| Left / right arrow | Previous / next token |
+| Up / down arrow | Parent / first child |
+| Alt + left / right | Previous / next sibling |
+| Shift + navigation | Extend the selection while retaining its anchor |
+| Click / Shift + click | Set the cursor / select an arbitrary source range |
+| Home / End | Start / end of the current line |
+| Escape | Collapse the selection |
+| Ctrl/Cmd + A / C | Select all / copy original source text |
+
+The toolbar exposes the same structural commands. For example, in `2 + 3 * 4`
+you can select `2 + 3` or `* 4`, although neither range is a complete AST subtree.
+Cut copies the selection without modifying the source; paste and typing do not
+edit imported documents in this first version.
+
+## Integration and boundaries
+
+- `server/` owns Python AST parsing, tokenization, source projection, diagnostics,
+  and conversion of Python byte/code-point coordinates to LSP UTF-16 positions.
+- `src/web/source-client.js` owns a generic versioned LSP client, graph validation,
+  navigation and anchor/focus ranges. Labels from the server are display data;
+  the client does not dispatch on Python syntax kinds.
+- The existing `Model.re`, `Update.re`, `Page.re` and `Code.re` carry source-mode
+  state, actions, input and rendering. Source rendering reuses Tylr's token SVG
+  outline, caret and font-coordinate helpers inside the same code surface.
+  It does not create a separate AST viewer or feed Python through Hazel's parser.
+- Source text is retained verbatim, including comments, indentation, CRLF,
+  trailing newlines and Unicode. Source-mode movement never invokes Hazel's
+  whitespace repair. Copy writes the original selected text directly to the
+  browser clipboard event; an operating system may normalize clipboard line endings.
+
+The server supports ordinary LSP initialization, document lifecycle and shutdown
+with stdio framing or an isolated loopback HTTP transport. Its capability-negotiated
+`tylr/structure` method is a **custom extension**, not a ChatLSP method. See
+[server/README.md](../../server/README.md) for the contract and launch options.
+
+## Current limits
+
+- This is source navigation, not Python structural editing, execution, type
+  checking, definition lookup or refactoring.
+- Syntax errors preserve visible source and produce an explicit `unavailable`
+  status; structural commands are disabled until a valid snapshot is available.
+  There is no error-recovery parser or fabricated fallback tree.
+- The server returns a source-span projection, not every Python AST node. Equal
+  spans collapse; crossing spans and spans that split tokens are omitted. Accepted
+  grammar and f-string detail follow the running Python interpreter.
+- The view uses monospace display cells and four-column tab stops. It does not
+  implement full grapheme-cluster or East Asian terminal-width layout. Token
+  outlines can be split at selection boundaries.
+
+## Verification status
+
+Local verification currently passes: **21 Python server tests**, **12 generic
+client and real client/server integration tests**, and whitespace checks. The
+changed Reason files also passed a JavaScript refmt syntax check; that is not
+OCaml type checking.
+
+**The OCaml build, existing native-editor tests and compiled-browser acceptance
+remain pending CI.** This environment cannot initialize opam's normal sandbox
+(`bwrap: Creating new namespace failed: Operation not permitted`), so no local
+build or UI success is claimed.
+
+```sh
+python3 -m unittest discover -s server/tests -p 'test_*.py' -v
+node --test test/source-client*.mjs
 opam exec -- dune runtest --force
-git diff --check
 ```
 
-Start or resume a bounded GNHF run on this branch:
+The CI workflow builds the real application and runs `test/ui-smoke.mjs` against
+the Python server. That test opens files through the UI, checks token and tree
+navigation, cross-tree ranges, exact copy-event text, Unicode/CRLF preservation,
+read-only behavior, invalid-source status and returning to the native editor.
+It captures screenshots in the `tylr-browser-evidence` artifact.
 
-```sh
-GNHF_TELEMETRY=0 gnhf --agent codex --current-branch \
-  --max-iterations 12 --max-tokens 800000 --prevent-sleep off \
-  --stop-when 'Python structural navigation is integrated into Tylr through LSP; source is preserved; token, parent/child/sibling and cross-tree selection work; existing and new tests, build and UI acceptance pass; commits are small and the tree is clean.' \
-  < docs/python-navigation/gnhf-prompt.md
-```
+## GNHF and implementation history
 
-The host must review the actual diffs and independently verify tests and the UI.
-If the iteration limit is reached with good partial work, continue from the
-existing state in a bounded follow-up run. A worker's completion claim alone is
-not acceptance. Do not merge without explicit authorization.
+On 2026-10-14, the host forked `hazelgrove/tylr` to `seanjennings960/tylr`, based
+on upstream `melds` commit `1543f29f87db20bdd94bc9fa82df5c8142ae73e7`, and loaded
+the requested [GNHF skill](https://github.com/kunchenguid/gnhf/tree/main/skills/gnhf).
+GNHF 0.1.51 created `gnhf/objective-implement-67097f` in Companion mode with Codex
+CLI 0.159.2. Its worker failed to start producing events before the startup
+watchdog stopped it: zero successful iterations and zero implementation commits.
 
-Suggested slices: protocol contract, range invariants, Python server, generic
-transport/versioning, navigation model, existing editor input integration,
-existing structural rendering, then end-to-end verification and limitations.
-Split large stages into further small commits rather than collapsing the feature.
+The user subsequently explicitly authorized direct coding with CI verification.
+The implementation commits on this branch were made under that authorization;
+they are not represented as successful GNHF iterations. The original bounded
+worker objective is preserved in [gnhf-prompt.md](gnhf-prompt.md).
 
-## References
-
-- [Tylr](https://github.com/hazelgrove/tylr)
-- [ChatLSP paper](https://arxiv.org/abs/2409.00921)
-- [LSP selection ranges](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_selectionRange)
+References: [Tylr](https://github.com/hazelgrove/tylr),
+[ChatLSP](https://arxiv.org/abs/2409.00921), and
+[LSP selection ranges](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_selectionRange).
