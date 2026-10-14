@@ -44,6 +44,13 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(endpoint, { waitUntil: "networkidle" });
+    await page.evaluate(() => {
+      // Observe what the app writes to the actual browser copy event before
+      // any platform clipboard normalization (for example LF/CRLF conversion).
+      window.addEventListener("copy", event => {
+        window.tylrCopiedSource = event.clipboardData.getData("text/plain");
+      });
+    });
     await page.locator("#code-container .code").waitFor();
     assert.equal(await page.locator("#code-container .source-code").count(), 0);
     await page.getByRole("textbox", { name: "Language server language ID" }).fill("python");
@@ -107,6 +114,7 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
     await selected("2 + 3");
     assert.equal(await page.locator("#code-container .caret.anchor").count(), 1);
     await page.keyboard.press("Control+c");
+    await page.waitForFunction(() => window.tylrCopiedSource === "2 + 3");
     await page.waitForFunction(async () => await navigator.clipboard.readText() === "2 + 3");
     await page.screenshot({ path: path.join(artifacts, "cross-tree-selection.png"), fullPage: true });
 
@@ -116,7 +124,9 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
     await page.locator("#clipboard-shim").focus();
     await page.keyboard.press("Control+a");
     await page.keyboard.press("Control+c");
-    await page.waitForFunction(async expected => await navigator.clipboard.readText() === expected, original);
+    await page.waitForFunction(expected => window.tylrCopiedSource === expected, original);
+    await page.waitForFunction(async expected =>
+      (await navigator.clipboard.readText()).replaceAll("\r\n", "\n") === expected.replaceAll("\r\n", "\n"), original);
     await page.keyboard.press("Delete");
     await page.keyboard.type("x");
     assert.equal(await page.locator(".source-line").allTextContents().then(lines => lines.join("\n")), original.replaceAll("\r\n", "\n"));
