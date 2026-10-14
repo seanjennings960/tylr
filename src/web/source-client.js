@@ -236,5 +236,134 @@
     }
   }
 
-  return { sourceIndex, validateStructure, NavigationDocument };
+  class SourceSession extends NavigationDocument {
+    constructor({ endpoint = "", languageId, fetch: fetcher = globalThis.fetch, ...document }) {
+      super(document);
+      requireValue(typeof languageId === "string" && languageId.length > 0, "Missing language ID");
+      requireValue(typeof fetcher === "function", "HTTP transport is unavailable");
+      this.endpoint = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint;
+      this.languageId = languageId;
+      this.fetcher = fetcher;
+      this.sessionId = null;
+      this.sequence = 0;
+      this.generation = 0;
+      this.closed = false;
+      this.initialized = false;
+      this.queue = Promise.resolve();
+    }
+
+    async post(path, body) {
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), 15000);
+      try {
+        const response = await this.fetcher(this.endpoint + path, {
+          method: "POST", headers: { "Content-Type": "application/json",
+            ...(this.sessionId ? { "X-Tylr-Session": this.sessionId } : {}) },
+          body: JSON.stringify(body), signal: abort.signal,
+        });
+        requireValue(response.ok, "Language server HTTP " + response.status);
+        return response.status === 204 ? null : await response.json();
+      } finally { clearTimeout(timer); }
+    }
+
+    async rpc(method, params, notification = false) {
+      const id = notification ? undefined : ++this.sequence;
+      const result = await this.post("/rpc", { jsonrpc: "2.0", ...(notification ? {} : { id }), method, params });
+      if (notification) return;
+      requireValue(result && result.jsonrpc === "2.0" && result.id === id, "Mismatched JSON-RPC response");
+      if (result.error) throw new Error(typeof result.error.message === "string" ? result.error.message : "Language server error");
+      requireValue(Object.prototype.hasOwnProperty.call(result, "result"), "Missing JSON-RPC result");
+      return result.result;
+    }
+
+    fail(error) {
+      if (this.closed) return;
+      this.status = "error";
+      this.message = error.name === "AbortError" ? "Language server timed out" : error.message;
+      this.structure = null;
+      this.activeId = null;
+      this.emit();
+    }
+
+    async start() {
+      requireValue(!this.closed && !this.sessionId, "Session already started or closed");
+      this.status = "connecting";
+      this.message = "Connecting to language server…";
+      this.emit();
+      try {
+        const session = await this.post("/session", {});
+        requireValue(session && typeof session.sessionId === "string" && session.sessionId.length > 0, "Invalid language server session");
+        this.sessionId = session.sessionId;
+        if (this.closed) { await this.rpc("exit", {}, true); return this; }
+        const result = await this.rpc("initialize", { processId: null,
+          clientInfo: { name: "tylr-source", version: "1" }, rootUri: null,
+          capabilities: { general: { positionEncodings: ["utf-16"] }, experimental: { tylrStructure: { version: 1 } } } });
+        requireValue((result.capabilities?.positionEncoding || "utf-16") === "utf-16", "Server must support UTF-16 positions");
+        requireValue(result.capabilities?.experimental?.tylrStructure?.version === 1, "Server does not support tylr/structure version 1");
+        if (this.closed) return this;
+        await this.rpc("initialized", {}, true);
+        await this.rpc("textDocument/didOpen", { textDocument: {
+          uri: this.uri, languageId: this.languageId, version: this.version, text: this.text,
+        } }, true);
+        this.initialized = true;
+        await this.refresh(this.generation);
+        return this;
+      } catch (error) { this.fail(error); throw error; }
+    }
+
+    async refresh(generation) {
+      const document = { uri: this.uri, version: this.version };
+      const sessionId = this.sessionId;
+      const payload = await this.rpc("tylr/structure", { textDocument: document });
+      // An older request must never replace the structure for newer source.
+      if (this.closed || generation !== this.generation || sessionId !== this.sessionId) return;
+      this.setStructure(payload);
+    }
+
+    update(text) {
+      requireValue(this.initialized && !this.closed, "Session is not open");
+      this.text = text;
+      this.index = sourceIndex(text);
+      this.version += 1;
+      const version = this.version, generation = ++this.generation;
+      this.structure = null;
+      this.activeId = null;
+      this.anchor = this.focus = 0;
+      this.status = "loading";
+      this.message = "Refreshing document structure…";
+      this.emit();
+      const work = async () => {
+        if (this.closed) return;
+        await this.rpc("textDocument/didChange", { textDocument: { uri: this.uri, version }, contentChanges: [{ text }] }, true);
+        // More recent queued changes need no intermediate structure response.
+        if (generation === this.generation) await this.refresh(generation);
+      };
+      this.queue = this.queue.then(work, work).catch(error => { this.fail(error); throw error; });
+      return this.queue;
+    }
+
+    async close() {
+      if (this.closed) return;
+      this.closed = true;
+      this.generation += 1;
+      this.status = "closed";
+      this.message = "Document closed";
+      this.structure = null;
+      this.emit();
+      await this.queue.catch(() => {});
+      if (!this.sessionId) return;
+      try {
+        if (this.initialized) await this.rpc("textDocument/didClose", { textDocument: { uri: this.uri } }, true);
+        await this.rpc("shutdown", null);
+      } finally { await this.rpc("exit", {}, true); }
+    }
+  }
+
+  async function open(options) {
+    const session = new SourceSession(options);
+    await session.start();
+    return session;
+  }
+
+  return { sourceIndex, validateStructure, NavigationDocument, SourceSession, open };
 });
