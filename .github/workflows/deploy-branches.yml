@@ -30,6 +30,23 @@ jobs:
         run: opam exec -- dune build src --profile release
       - name: Test existing editor
         run: opam exec -- dune runtest --force
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install browser test runtime
+        run: |
+          npm install --prefix "$RUNNER_TEMP/tylr-ui" playwright@1.58.2
+          "$RUNNER_TEMP/tylr-ui/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Exercise the built editor with the real language server
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/tylr-ui/node_modules/playwright
+        run: node --test test/ui-smoke.mjs
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tylr-browser-evidence
+          path: _build/ui-artifacts/
       - name: Upload runnable editor
         uses: actions/upload-artifact@v4
         with:
@@ -48,7 +65,7 @@ jobs:
         with:
           node-version: '22'
       - name: Python language server tests
-        run: python -m unittest discover -s server -p 'test_*.py' -v
+        run: python -m unittest discover -s server/tests -p 'test_*.py' -v
       - name: Generic navigation tests
         run: node --test test/source-client*.mjs
       - run: git diff --check
