@@ -169,6 +169,22 @@ test("HTTP transport negotiates capabilities and completes the LSP document life
   assert.equal(session.status, "closed");
 });
 
+test("the default fetch transport retains its browser global receiver", async () => {
+  const originalFetch = globalThis.fetch;
+  const backend = server();
+  globalThis.fetch = function (url, init) {
+    assert.equal(this, globalThis, "native browser fetch requires its global receiver");
+    return backend.fetch(url, init);
+  };
+  try {
+    const session = new SourceSession({ ...doc, languageId: "python" });
+    await session.start();
+    assert.equal(session.status, "ready");
+    await session.close();
+    assert.equal(backend.messages.at(-1).message.method, "exit");
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("protocol and transport failures become visible without losing source", async () => {
   for (const options of [{ encoding: "utf-8" }, { wrongId: true }, { structure: () => ({ ...fixture(), version: 42 }) }]) {
     const backend = server(options);

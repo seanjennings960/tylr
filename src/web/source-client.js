@@ -237,13 +237,16 @@
   }
 
   class SourceSession extends NavigationDocument {
-    constructor({ endpoint = "", languageId, fetch: fetcher = globalThis.fetch, ...document }) {
+    constructor({ endpoint = "", languageId, fetch: fetcher, ...document }) {
       super(document);
       requireValue(typeof languageId === "string" && languageId.length > 0, "Missing language ID");
-      requireValue(typeof fetcher === "function", "HTTP transport is unavailable");
+      const transport = fetcher === undefined ? globalThis.fetch : fetcher;
+      requireValue(typeof transport === "function", "HTTP transport is unavailable");
       this.endpoint = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint;
       this.languageId = languageId;
-      this.fetcher = fetcher;
+      // Native Window.fetch requires its Window receiver. Keep injected
+      // transports untouched, but do not call the browser method as a session.
+      this.fetcher = fetcher === undefined ? transport.bind(globalThis) : transport;
       this.sessionId = null;
       this.sequence = 0;
       this.generation = 0;
