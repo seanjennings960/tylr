@@ -46,7 +46,7 @@ jobs:
       - name: Exercise the built editor with the real language server
         env:
           PLAYWRIGHT_MODULE: ${{ runner.temp }}/tylr-ui/node_modules/playwright
-        run: node --test test/ui-smoke.mjs
+        run: node --test test/*ui-smoke.mjs
       - name: Upload browser evidence
         if: always()
         uses: actions/upload-artifact@v4
