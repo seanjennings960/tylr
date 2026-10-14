@@ -3,7 +3,11 @@
 import logging
 from urllib.parse import urlsplit
 
+from .edit_service import EditError, EditService
 from .structure import snapshot
+
+
+EDIT_REQUESTS = {"tylr/edit/start", "tylr/edit/apply", "tylr/edit/state", "tylr/edit/close"}
 
 
 class RpcError(Exception):
@@ -42,6 +46,7 @@ class LanguageServer:
     def __init__(self):
         self.state = "new"
         self.documents = {}
+        self.edits = EditService()
         self.exited = False
         self.exit_code = 1
 
@@ -61,11 +66,11 @@ class LanguageServer:
             require(isinstance(params, dict), "params must be an object")
             if is_request and method in {"initialized", "textDocument/didOpen", "textDocument/didChange", "textDocument/didClose", "exit", "$/cancelRequest"}:
                 raise RpcError(-32600, "method is a notification")
-            if not is_request and method in {"initialize", "shutdown", "tylr/structure"}:
+            if not is_request and method in {"initialize", "shutdown", "tylr/structure"} | EDIT_REQUESTS:
                 return None
             result = self.handle(method, params)
             return {"jsonrpc": "2.0", "id": request_id, "result": result} if is_request else None
-        except RpcError as error:
+        except (RpcError, EditError) as error:
             if not is_request and isinstance(message, dict) and isinstance(message.get("method"), str):
                 logging.warning("Ignored %s notification: %s", message["method"], error)
                 return None
@@ -79,6 +84,7 @@ class LanguageServer:
             self.exit_code = 0 if self.state == "shutdown" else 1
             self.exited = True
             self.documents.clear()
+            self.edits.clear()
             return None
         if self.exited or self.state == "shutdown":
             raise RpcError(-32600, "server is shut down")
@@ -89,8 +95,12 @@ class LanguageServer:
             return {"capabilities": {
                 "positionEncoding": "utf-16",
                 "textDocumentSync": {"openClose": True, "change": 1},
-                "experimental": {"tylrStructure": {"version": 1}},
-            }, "serverInfo": {"name": "tylr-python", "version": "0.1.0"}}
+                "experimental": {
+                    "tylrStructure": {"version": 1},
+                    "tylrEdit": {"version": 1, "label": "Edit expression draft",
+                                 "description": "Edit a small expression subset in a separate, canonically formatted draft."},
+                },
+            }, "serverInfo": {"name": "tylr-python", "version": "0.2.0"}}
         if method == "initialized" and self.state == "initializing":
             self.state = "ready"
             return None
@@ -98,9 +108,23 @@ class LanguageServer:
             raise RpcError(-32002, "Server not initialized")
         if method == "shutdown":
             self.state = "shutdown"
+            self.edits.clear()
             return None
         if method == "$/cancelRequest":
             return None  # Requests are processed synchronously in each session.
+        if method in EDIT_REQUESTS:
+            if method == "tylr/edit/start":
+                uri, version = document_id(params.get("textDocument"))
+                require(uri in self.documents, "document is not open")
+                actual_version, text = self.documents[uri]
+                if version != actual_version:
+                    raise RpcError(-32801, "Content modified: document version does not match")
+                return self.edits.start(uri, version, text, params.get("requestId"))
+            if method == "tylr/edit/apply":
+                return self.edits.apply(params)
+            if method == "tylr/edit/state":
+                return self.edits.read(params)
+            return self.edits.close(params)
         if method == "textDocument/didOpen":
             document = params.get("textDocument")
             uri, version = document_id(document)
@@ -118,11 +142,13 @@ class LanguageServer:
                 require(isinstance(change, dict) and set(change) == {"text"}, "full text synchronization is required")
                 text = source_text(change["text"])
             self.documents[uri] = (version, text)
+            self.edits.close_document(uri)
             return None
         if method == "textDocument/didClose":
             document = params.get("textDocument")
             require(isinstance(document, dict) and isinstance(document.get("uri"), str), "textDocument.uri is required")
             self.documents.pop(document["uri"], None)
+            self.edits.close_document(document["uri"])
             return None
         if method == "tylr/structure":
             uri, version = document_id(params.get("textDocument"))
