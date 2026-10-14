@@ -236,6 +236,57 @@
     }
   }
 
+  // A draft is a server-owned editing state with a generic text presentation.
+  // Never parse its presentation or write it into the original LSP document.
+  function validateEditSnapshot(payload, source, expected = {}) {
+    requireValue(payload && typeof payload.editorId === "string" && payload.editorId.length > 0, "Invalid draft ID");
+    requireValue(Number.isInteger(payload.revision) && payload.revision >= 0 && payload.revision < 2 ** 31, "Invalid draft revision");
+    requireValue(payload.source?.uri === source.uri && payload.source?.version === source.version, "Draft belongs to another source version");
+    requireValue(typeof payload.text === "string" && typeof payload.complete === "boolean" && typeof payload.hint === "string", "Malformed draft presentation");
+    if (expected.editorId !== undefined) requireValue(payload.editorId === expected.editorId, "Mismatched draft response");
+    if (expected.revision !== undefined) requireValue(payload.revision === expected.revision, "Unexpected draft revision");
+    if (expected.minRevision !== undefined) requireValue(payload.revision >= expected.minRevision, "Stale draft response");
+    const draft = new NavigationDocument({ uri: "tylr-editor://" + payload.editorId, text: payload.text, version: payload.revision });
+    draft.setStructure(payload.structure);
+    requireValue(draft.status === "ready", "Draft structure is unavailable");
+    requireValue(Array.isArray(payload.targets), "Missing draft targets");
+    draft.targets = new Map();
+    for (const target of payload.targets) {
+      requireValue(target && typeof target.nodeId === "string" && draft.structure.nodes.has(target.nodeId) && !draft.targets.has(target.nodeId), "Invalid or duplicate draft target");
+      requireValue(Array.isArray(target.actions), "Invalid draft actions");
+      const ids = new Set();
+      const actions = target.actions.map(action => {
+        requireValue(action && typeof action.id === "string" && action.id.length > 0 && !ids.has(action.id) && typeof action.label === "string", "Invalid or duplicate draft action");
+        ids.add(action.id);
+        if (action.input !== undefined) requireValue(action.input && typeof action.input.label === "string" && typeof action.input.hint === "string", "Invalid draft input description");
+        return { id: action.id, label: action.label,
+          ...(action.input === undefined ? {} : { input: { label: action.input.label, hint: action.input.hint } }) };
+      });
+      draft.targets.set(target.nodeId, actions);
+    }
+    const selected = draft.structure.nodes.get(payload.selection?.nodeId);
+    requireValue(selected, "Invalid draft selection");
+    draft.editorId = payload.editorId;
+    draft.complete = payload.complete;
+    draft.hint = payload.hint;
+    draft.activeId = selected.id;
+    draft.anchor = selected.start;
+    draft.focus = selected.end;
+    return draft;
+  }
+
+  function selectedEditTarget(draft) {
+    if (!draft) return null;
+    const start = Math.min(draft.anchor, draft.focus), end = Math.max(draft.anchor, draft.focus);
+    const exact = id => {
+      const node = draft.structure.nodes.get(id);
+      return node && node.start === start && node.end === end;
+    };
+    if (draft.targets.has(draft.activeId) && exact(draft.activeId)) return draft.activeId;
+    const matches = [...draft.targets.keys()].filter(exact);
+    return matches.length === 1 ? matches[0] : null;
+  }
+
   class SourceSession extends NavigationDocument {
     constructor({ endpoint = "", languageId, fetch: fetcher, ...document }) {
       super(document);
@@ -256,6 +307,16 @@
       this.starting = null;
       this.ending = null;
       this.queue = Promise.resolve();
+      this.editCapability = null;
+      this.draft = null;
+      this.editBusy = false;
+      this.editRecoverable = false;
+      this.editRecoveryMinRevision = 0;
+      this.editMessage = "";
+      this.editEpoch = 0;
+      this.editPending = Promise.resolve();
+      this.editStartRequestId = null;
+      this.editStartSequence = 0;
     }
 
     async post(path, body) {
@@ -277,7 +338,11 @@
       const result = await this.post("/rpc", { jsonrpc: "2.0", ...(notification ? {} : { id }), method, params });
       if (notification) return;
       requireValue(result && result.jsonrpc === "2.0" && result.id === id, "Mismatched JSON-RPC response");
-      if (result.error) throw new Error(typeof result.error.message === "string" ? result.error.message : "Language server error");
+      if (result.error) {
+        const error = new Error(typeof result.error.message === "string" ? result.error.message : "Language server error");
+        error.rpcCode = result.error.code;
+        throw error;
+      }
       requireValue(Object.prototype.hasOwnProperty.call(result, "result"), "Missing JSON-RPC result");
       return result.result;
     }
@@ -308,9 +373,13 @@
         if (this.closed) return this;
         const result = await this.rpc("initialize", { processId: null,
           clientInfo: { name: "tylr-source", version: "1" }, rootUri: null,
-          capabilities: { general: { positionEncodings: ["utf-16"] }, experimental: { tylrStructure: { version: 1 } } } });
+          capabilities: { general: { positionEncodings: ["utf-16"] }, experimental: { tylrStructure: { version: 1 }, tylrEdit: { version: 1 } } } });
         requireValue((result.capabilities?.positionEncoding || "utf-16") === "utf-16", "Server must support UTF-16 positions");
         requireValue(result.capabilities?.experimental?.tylrStructure?.version === 1, "Server does not support tylr/structure version 1");
+        const edit = result.capabilities?.experimental?.tylrEdit;
+        if (edit?.version === 1 && typeof edit.label === "string" && typeof edit.description === "string") {
+          this.editCapability = { label: edit.label, description: edit.description };
+        }
         if (this.closed) return this;
         await this.rpc("initialized", {}, true);
         this.serverReady = true;
@@ -340,6 +409,8 @@
 
     update(text) {
       requireValue(this.initialized && !this.closed, "Session is not open");
+      requireValue(!this.draft && !this.editBusy, "Discard the draft before changing its source document");
+      this.editStartRequestId = null;
       this.text = text;
       this.index = sourceIndex(text);
       this.version += 1;
@@ -363,10 +434,163 @@
       return this.queue;
     }
 
+    currentDocument() { return this.draft || this; }
+
+    editCurrent(epoch) { return !this.closed && epoch === this.editEpoch; }
+
+    adoptDraft(draft, preserveSelection = false) {
+      const previous = this.draft;
+      if (preserveSelection && previous?.editorId === draft.editorId && previous.version === draft.version) {
+        requireValue(previous.text === draft.text, "Draft text changed without a new revision");
+        draft.anchor = previous.anchor;
+        draft.focus = previous.focus;
+        draft.activeId = draft.structure.nodes.has(previous.activeId) ? previous.activeId : null;
+      }
+      this.draft = draft;
+      draft.subscribe(() => { if (this.draft === draft) this.emit(); });
+    }
+
+    startEdit() {
+      if (!this.editCapability || this.status !== "ready" || this.closed || this.draft || this.editBusy) return Promise.resolve(false);
+      const epoch = ++this.editEpoch;
+      this.editBusy = true;
+      this.editRecoverable = false;
+      this.editRecoveryMinRevision = 0;
+      this.editMessage = "Starting draft…";
+      const requestId = this.editStartRequestId || "start:" + (++this.editStartSequence);
+      this.editStartRequestId = requestId;
+      this.emit();
+      this.editPending = (async () => {
+        let payload;
+        try {
+          payload = await this.rpc("tylr/edit/start", { textDocument: { uri: this.uri, version: this.version }, requestId });
+          const draft = validateEditSnapshot(payload, this, { revision: 0 });
+          if (!this.editCurrent(epoch)) {
+            await this.rpc("tylr/edit/close", { editorId: draft.editorId }).catch(() => {});
+            return false;
+          }
+          this.adoptDraft(draft);
+          this.editStartRequestId = null;
+          this.editMessage = "";
+          return true;
+        } catch (error) {
+          if (payload?.editorId && typeof payload.editorId === "string") {
+            await this.rpc("tylr/edit/close", { editorId: payload.editorId }).catch(() => {});
+            if (this.editStartRequestId === requestId) this.editStartRequestId = null;
+          }
+          if (this.editCurrent(epoch)) this.editMessage = error.message;
+          return false;
+        } finally {
+          if (this.editCurrent(epoch)) { this.editBusy = false; this.emit(); }
+        }
+      })();
+      return this.editPending;
+    }
+
+    async readDraft(epoch, reason = "") {
+      const previous = this.draft;
+      if (!previous) return false;
+      try {
+        const payload = await this.rpc("tylr/edit/state", { editorId: previous.editorId });
+        const draft = validateEditSnapshot(payload, this, {
+          editorId: previous.editorId, minRevision: Math.max(previous.version, this.editRecoveryMinRevision),
+        });
+        if (!this.editCurrent(epoch)) return false;
+        this.adoptDraft(draft, true);
+        this.editRecoverable = false;
+        this.editRecoveryMinRevision = 0;
+        this.editMessage = reason ? reason + " Server draft refreshed." : "";
+        return true;
+      } catch (error) {
+        if (this.editCurrent(epoch)) {
+          this.editRecoverable = true;
+          this.editMessage = "Cannot verify the draft state: " + error.message + ". Recover or discard the draft before editing.";
+        }
+        return false;
+      }
+    }
+
+    applyEdit(actionId, input = "") {
+      const current = this.draft;
+      if (!current || this.closed || this.editBusy || this.editRecoverable) return Promise.resolve(false);
+      const targetId = selectedEditTarget(current);
+      const action = current.targets.get(targetId)?.find(item => item.id === actionId);
+      if (!action) {
+        this.editMessage = "Select exactly one editable node and use an offered action.";
+        this.emit();
+        return Promise.resolve(false);
+      }
+      if (action.input && typeof input !== "string") return Promise.resolve(false);
+      const epoch = this.editEpoch;
+      this.editBusy = true;
+      this.editMessage = "Applying edit…";
+      this.emit();
+      this.editPending = (async () => {
+        try {
+          const payload = await this.rpc("tylr/edit/apply", { editorId: current.editorId,
+            baseRevision: current.version, targetId, actionId,
+            ...(action.input ? { input } : {}) });
+          const draft = validateEditSnapshot(payload, this, { editorId: current.editorId, revision: current.version + 1 });
+          if (!this.editCurrent(epoch)) return false;
+          this.adoptDraft(draft);
+          this.editMessage = "";
+          return true;
+        } catch (error) {
+          // The server may have committed before a transport/validation failure.
+          // Read its authoritative state; never retry the mutating request.
+          if (this.editCurrent(epoch)) {
+            // An old state read can arrive before a delayed mutating request.
+            // Only an explicit precommit rejection makes the old revision safe.
+            const rejected = error.rpcCode === -32602 || error.rpcCode === -32801;
+            this.editRecoveryMinRevision = current.version + (rejected ? 0 : 1);
+            await this.readDraft(epoch, error.message);
+          }
+          return false;
+        } finally {
+          if (this.editCurrent(epoch)) { this.editBusy = false; this.emit(); }
+        }
+      })();
+      return this.editPending;
+    }
+
+    recoverEdit() {
+      if (!this.draft || this.closed || this.editBusy) return Promise.resolve(false);
+      const epoch = this.editEpoch;
+      this.editBusy = true;
+      this.editMessage = "Recovering server draft…";
+      this.emit();
+      this.editPending = this.readDraft(epoch).finally(() => {
+        if (this.editCurrent(epoch)) { this.editBusy = false; this.emit(); }
+      });
+      return this.editPending;
+    }
+
+    async discardEdit() {
+      const draft = this.draft;
+      this.editEpoch += 1;
+      this.draft = null;
+      this.editBusy = false;
+      this.editRecoverable = false;
+      this.editRecoveryMinRevision = 0;
+      this.editMessage = "";
+      this.emit();
+      if (draft) await this.rpc("tylr/edit/close", { editorId: draft.editorId }).catch(() => {});
+    }
+
+    exportDraft() {
+      if (!this.draft?.complete || this.editBusy || this.editRecoverable || this.closed) return null;
+      let name = "draft.txt";
+      try { name = decodeURIComponent(new URL(this.uri).pathname.split("/").at(-1)) || name; } catch (_) { /* Generic fallback name. */ }
+      return { name, text: this.draft.text };
+    }
+
     async close() {
       if (this.closed) return;
       this.closed = true;
       this.generation += 1;
+      this.editEpoch += 1;
+      this.draft = null;
+      this.editBusy = false;
       this.status = "closed";
       this.message = "Document closed";
       this.structure = null;
@@ -375,6 +599,7 @@
       // in-flight initialized/didOpen cannot arrive after the session was freed.
       if (this.starting) await this.starting.catch(() => {});
       await this.queue.catch(() => {});
+      await this.editPending.catch(() => {});
       await this.endSession();
     }
 
@@ -402,9 +627,21 @@
   // The adapter feeds the existing Reason model and SVG/text rendering pipeline.
   // It creates no editor DOM and never rewrites the source into pretty-printed text.
   function renderSnapshot(document) {
+    const owner = document instanceof SourceSession ? document : null;
+    const draft = owner?.draft;
+    const targetId = selectedEditTarget(draft);
+    const edit = { editing: !!draft,
+      edit_available: !!owner?.editCapability && owner.status === "ready" && !owner.closed && !draft,
+      edit_label: owner?.editCapability?.label || "",
+      edit_hint: owner?.editMessage || draft?.hint || owner?.editCapability?.description || "",
+      edit_actions: (draft?.targets.get(targetId) || []).map(action => ({
+        id: action.id, label: action.label, input_label: action.input?.label || "", input_hint: action.input?.hint || "",
+      })), edit_complete: draft?.complete || false, edit_busy: owner?.editBusy || false,
+      edit_recoverable: owner?.editRecoverable || false };
+    document = draft || document;
     if (!document) return { uri: "", source: "", status: "closed", message: "", focus_label: "",
       selection_label: "", selected_text: "", lines: [], caret: { row: 0, col: 0 },
-      anchor: { row: 0, col: 0 }, has_selection: false };
+      anchor: { row: 0, col: 0 }, has_selection: false, ...edit };
     const state = document.snapshot(), index = document.index;
     const active = document.structure?.nodes.get(document.activeId);
     const tokens = document.structure?.tokens || [];
@@ -439,7 +676,7 @@
     return { uri: state.uri, source: state.text, status: state.status, message: state.message,
       focus_label: active?.label || "", selection_label: (a.line + 1) + ":" + (a.character + 1) + "–" + (b.line + 1) + ":" + (b.character + 1),
       selected_text: state.selectedText, lines, caret: index.displayPosition(state.focus),
-      anchor: index.displayPosition(state.anchor), has_selection: state.selectionStart !== state.selectionEnd };
+      anchor: index.displayPosition(state.anchor), has_selection: state.selectionStart !== state.selectionEnd, ...edit };
   }
 
   let activeSession = null, callback = null, openGeneration = 0;
@@ -497,19 +734,45 @@
   }
 
   function command(direction, extend = false) {
-    return activeSession?.navigate(direction, { extend }) || false;
+    if (activeSession?.editBusy) return false;
+    return activeSession?.currentDocument().navigate(direction, { extend }) || false;
   }
 
   function jump(row, col, extend = false) {
-    if (!activeSession) return;
-    row = Math.max(0, Math.min(row, activeSession.index.lines.length - 1));
+    if (!activeSession || activeSession.editBusy) return;
+    const document = activeSession.currentDocument();
+    row = Math.max(0, Math.min(row, document.index.lines.length - 1));
     col = Math.max(0, col);
-    const offset = activeSession.index.displayOffset(row, col);
-    activeSession.selectOffsets(extend ? activeSession.anchor : offset, offset);
+    const offset = document.index.displayOffset(row, col);
+    document.selectOffsets(extend ? document.anchor : offset, offset);
   }
 
   function selectAll() {
-    if (activeSession) activeSession.selectOffsets(0, activeSession.text.length);
+    if (activeSession && !activeSession.editBusy) {
+      const document = activeSession.currentDocument();
+      document.selectOffsets(0, document.text.length);
+    }
+  }
+
+  function startEdit() { return activeSession?.startEdit(); }
+  function applyEdit(actionId, input) { return activeSession?.applyEdit(actionId, input); }
+  function discardEdit() { return activeSession?.discardEdit(); }
+  function recoverEdit() { return activeSession?.recoverEdit(); }
+  function exportEdit() {
+    const exported = activeSession?.exportDraft();
+    if (!exported || typeof document === "undefined") return exported;
+    try {
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(new Blob([exported.text], { type: "text/plain;charset=utf-8" }));
+      link.href = url;
+      link.download = exported.name;
+      document.body.append(link);
+      try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 0); }
+    } catch (error) {
+      activeSession.editMessage = "Could not export draft: " + error.message;
+      activeSession.emit();
+    }
+    return exported;
   }
 
   async function close() {
@@ -520,6 +783,6 @@
     if (session) await session.close().catch(() => {});
   }
 
-  return { sourceIndex, validateStructure, NavigationDocument, SourceSession, open, renderSnapshot,
-    start, openText, openFile, command, jump, selectAll, close };
+  return { sourceIndex, validateStructure, validateEditSnapshot, selectedEditTarget, NavigationDocument, SourceSession, open, renderSnapshot,
+    start, openText, openFile, command, jump, selectAll, close, startEdit, applyEdit, discardEdit, recoverEdit, exportEdit };
 });
