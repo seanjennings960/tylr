@@ -73,14 +73,18 @@ let tip = (t: Tip.t): Path.t => [
   H_({dx: -. adj(t)}),
 ];
 
-let hexagon = (style: Style.t, length: int): Node.t =>
+/* Geometry can also decorate source supplied by a language server. */
+let outline = (shape: Tip.s, length: int): Node.t =>
   List.flatten([
     Path.[m(~x=0, ~y=0) |> cmdfudge(~y=v_trunc), h(~x=length)],
-    tip(snd(style.shape)),
+    tip(snd(shape)),
     Path.[h(~x=0)],
-    Path.scale(-1., tip(fst(style.shape))),
+    Path.scale(-1., tip(fst(shape))),
   ])
-  |> Util.Svgs.Path.view
+  |> Util.Svgs.Path.view;
+
+let hexagon = (style: Style.t, length: int): Node.t =>
+  outline(style.shape, length)
   |> Util.Nodes.add_classes([
        "tile-path",
        "raised",

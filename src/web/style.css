@@ -614,3 +614,55 @@ svg {
 #history-toggle:checked ~ #history {
   height: auto;
 }
+/* Source documents share Tylr's code surface, font metrics and SVG geometry. */
+#source-toolbar {
+  position: relative;
+  z-index: 20;
+  box-sizing: border-box;
+  padding: 1rem 2rem;
+  font: 14px/1.5 system-ui, sans-serif;
+  color: #d8d5cc;
+  background: #242621;
+  border-bottom: 1px solid #53584b;
+}
+.source-open, .source-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.source-navigation { margin-top: 0.6rem; }
+#source-toolbar button, #source-toolbar input {
+  padding: 0.3rem 0.6rem;
+  color: inherit;
+  background: #343830;
+  border: 1px solid #707769;
+  border-radius: 4px;
+  font: inherit;
+}
+#source-toolbar button { cursor: pointer; }
+#source-toolbar button:hover { background: #464e3f; }
+#source-toolbar input { width: 7rem; }
+.source-status { margin-top: 0.6rem; color: #c1dba5; }
+.source-context { overflow-wrap: anywhere; }
+.source-help { margin-top: 0.25rem; color: #b8bdaf; }
+.source-workbench #page { position: relative; }
+.source-workbench #top-bar { position: relative; width: auto; }
+.source-workbench #code-container { margin-top: 2rem; }
+.source-code { min-height: 2em; white-space: pre; tab-size: 4; }
+.source-text { position: relative; z-index: var(--code-text-z); }
+.source-line { min-height: 1.45em; }
+.source-segment { white-space: pre; }
+.source-selected { background: #415868; color: #fff; }
+.source-active { text-decoration: underline; text-decoration-color: #a6c98b; }
+.source-code > svg { pointer-events: none; overflow: visible; }
+.source-code > .caret-container { position: absolute; top: 0; left: 0; }
+.source-tile {
+  fill: none;
+  stroke: #68785b;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.5;
+}
+.source-tile-active { stroke: #bcdf9d; stroke-width: 1.5; opacity: 1; }
+.source-code .caret.anchor { stroke: #77bfd1; }
