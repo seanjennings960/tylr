@@ -46,3 +46,12 @@ jobs:
       - name: Build executable conformance oracle
         working-directory: formal
         run: lake build edit_oracle
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check typed Python implementation
+        run: |
+          python -m pip install mypy==1.15.0
+          python -m mypy --strict server/editing.py server/editing_wire.py server/expression_io.py
+      - name: Compare Python transitions with the proved Lean definitions
+        run: python test/lean-conformance.py --oracle formal/.lake/build/bin/edit_oracle
