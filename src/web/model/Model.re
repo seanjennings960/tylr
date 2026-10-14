@@ -15,6 +15,7 @@ type t = {
   hist,
   source: option(Source.t),
   source_language: string,
+  source_edit_inputs: list((string, string)),
 };
 
 let cutoff = (==);
@@ -27,6 +28,7 @@ let init = {
   hist: [],
   source: None,
   source_language: "python",
+  source_edit_inputs: [],
 };
 
 let init_from_store = _ => {
