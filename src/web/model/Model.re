@@ -3,6 +3,7 @@ open Tylr_core;
 module State = State;
 module Font = Font;
 module History = History;
+module Source = Source;
 
 type hist = list((string, string));
 
@@ -12,6 +13,8 @@ type t = {
   history: History.t,
   font: Font.t,
   hist,
+  source: option(Source.t),
+  source_language: string,
 };
 
 let cutoff = (==);
@@ -22,6 +25,8 @@ let init = {
   history: History.empty,
   font: Font.init,
   hist: [],
+  source: None,
+  source_language: "python",
 };
 
 let init_from_store = _ => {

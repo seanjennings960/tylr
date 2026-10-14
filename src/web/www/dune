@@ -12,6 +12,9 @@
  (copy ../style.css style.css))
 
 (rule
+ (copy ../source-client.js source-client.js))
+
+(rule
  (copy ../fonts/SourceCodePro-Black.otf.woff2 SourceCodePro-Black.otf.woff2))
 
 (rule

@@ -13,11 +13,35 @@ type t =
   | PerformAction(Edit.t)
   | Undo
   | Redo
-  | Load(int);
+  | Load(int)
+  | SourceSnapshot(string)
+  | SourceLanguage(string)
+  | OpenSource
+  | CloseSource
+  | SourceCommand(string, bool)
+  | SourceJump(int, int, bool)
+  | SourceSelectAll;
 
 let is_f_key = s => Re.Str.(string_match(regexp("^F[0-9][0-9]*$"), s, 0));
 
-let handle_key_event = (k: Util.Key.t, ~model: Model.t): list(t) => {
+let handle_source_key = (k: Util.Key.t, source: Model.Source.t): list(t) => {
+  let extend = k.shift == Down;
+  let command = name => [SourceCommand(name, extend)];
+  switch (k.key) {
+  | U(_) => []
+  | D("a") when k.ctrl == Down || k.meta == Down => [SourceSelectAll]
+  | D("ArrowLeft") => command(k.alt == Down ? "prevSibling" : "prevToken")
+  | D("ArrowRight") => command(k.alt == Down ? "nextSibling" : "nextToken")
+  | D("ArrowUp") => command("parent")
+  | D("ArrowDown") => command("firstChild")
+  | D("Home") => [SourceJump(source.caret.row, 0, extend)]
+  | D("End") => [SourceJump(source.caret.row, 1000000000, extend)]
+  | D("Escape") => [SourceJump(source.caret.row, source.caret.col, false)]
+  | _ => []
+  };
+};
+
+let handle_hazel_key = (k: Util.Key.t, ~model: Model.t): list(t) => {
   // let zipper = model.zipper;
   // let restricted = Backpack.restricted(zipper.backpack);
   // let now = a => [PerformAction(a), UpdateDoubleTap(None)];
@@ -148,6 +172,12 @@ let handle_key_event = (k: Util.Key.t, ~model: Model.t): list(t) => {
   };
 };
 
+let handle_key_event = (k, ~model: Model.t) =>
+  switch (model.source) {
+  | None => handle_hazel_key(k, ~model)
+  | Some(source) => handle_source_key(k, source)
+  };
+
 module Failure = {
   [@deriving (show({with_path: false}), sexp, yojson)]
   type t =
@@ -167,10 +197,33 @@ let apply =
     : Result.t(Model.t) => {
   // print_endline("apply");
   switch (update) {
+  | SourceSnapshot(json) =>
+    let source = Model.Source.decode(json);
+    let source =
+      source.status == "closed" || source.status == "idle"
+        ? None : Some(source);
+    Ok({...model, source});
+  | SourceLanguage(source_language) => Ok({...model, source_language})
+  | OpenSource =>
+    Util.SourceBridge.open_file(model.source_language);
+    Ok(model);
+  | CloseSource =>
+    Util.SourceBridge.close();
+    Ok({...model, source: None});
+  | SourceCommand(name, extend) =>
+    Util.SourceBridge.command(name, extend);
+    Ok(model);
+  | SourceJump(row, col, extend) =>
+    Util.SourceBridge.jump(row, col, extend);
+    Ok(model);
+  | SourceSelectAll =>
+    Util.SourceBridge.select_all();
+    Ok(model);
   | Warmup =>
     Tylr_core.Walker.warmup();
     Ok(model);
   | SetFont(font) => Ok({...model, font})
+  | PerformAction(_) when Option.is_some(model.source) => Ok(model)
   | PerformAction(a) =>
     switch (Edit.perform(a, model.zipper)) {
     | None => Error(FailedToPerform)
@@ -193,8 +246,12 @@ let apply =
     | Some((zipper, history)) => Ok({...model, zipper, history})
     }
   | Load(n) =>
+    if (Option.is_some(model.source)) {
+      Util.SourceBridge.close();
+    };
     Ok({
       ...model,
+      source: None,
       editor: n,
       zipper: Store.load_default_syntax(n),
       history: History.empty,

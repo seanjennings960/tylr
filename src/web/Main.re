@@ -39,6 +39,7 @@ let act_str = (action: Update.t) =>
   switch (action) {
   | SetFont(_) => "SetFont"
   | PerformAction(edit) => Tylr_core.Edit.show(edit)
+  | SourceSnapshot(_) => "SourceSnapshot"
   | _ => Update.show(action)
   };
 
@@ -68,7 +69,9 @@ let apply = (old_model, action, state, ~schedule_action): Model.t => {
         ],
       };
     | _ =>
-      Store.save_syntax(0, model.zipper);
+      if (Option.is_none(model.source)) {
+        Store.save_syntax(0, model.zipper);
+      };
       {...model, hist: [(act_str(action), "✔"), ...model.hist]};
     }
   | Error(FailedToPerform as err) =>
@@ -122,6 +125,9 @@ module App = {
   module State = Model.State;
 
   let on_startup = (~schedule_action, _) => {
+    Util.SourceBridge.start(json =>
+      schedule_action(Update.SourceSnapshot(json))
+    );
     let _ =
       observe_font_specimen("font-specimen", fm =>
         schedule_action(Update.SetFont(fm))
