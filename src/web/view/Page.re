@@ -150,7 +150,7 @@ open Node;
 let editor_view = (model: Model.t) =>
   div(
     ~attrs=[Attr.id("code-container")],
-    [Code.view(~font=model.font, ~zipper=model.zipper)],
+    [Code.view(~font=model.font, ~zipper=model.zipper, ~source=model.source)],
   );
 
 // let editor_caption_view = (model: Model.t) =>
@@ -169,28 +169,19 @@ let editor_view = (model: Model.t) =>
 //   );
 
 let on_key = (~inject, ~model) => {
-  let prevent_default_tab = evt =>
-    Util.Key.key_tag(evt) == "Tab" ? [Effect.Prevent_default] : [];
+  let handle = (dir, evt) => {
+    let actions = Update.handle_key_event(Util.Key.mk(dir, evt), ~model);
+    let prevent =
+      Util.Key.key_tag(evt) == "Tab"
+      || (Option.is_some(model.source) && actions != []);
+    Effect.Many(
+      (prevent ? [Effect.Prevent_default] : []) @ List.map(inject, actions),
+    );
+  };
   [
     Attr.on_keypress(_ => Effect.Prevent_default),
-    Attr.on_keyup(evt =>
-      Effect.Many(
-        prevent_default_tab(evt)
-        @ List.map(
-            inject,
-            Update.handle_key_event(Util.Key.mk(KeyUp, evt), ~model),
-          ),
-      )
-    ),
-    Attr.on_keydown(evt =>
-      Effect.Many(
-        prevent_default_tab(evt)
-        @ List.map(
-            inject,
-            Update.handle_key_event(Util.Key.mk(KeyDown, evt), ~model),
-          ),
-      )
-    ),
+    Attr.on_keyup(handle(KeyUp)),
+    Attr.on_keydown(handle(KeyDown)),
   ];
 };
 
@@ -265,7 +256,73 @@ let load_button = (~inject, idx) => {
   );
 };
 
-let view = (~inject, ~stored, model: Model.t) => {
+let source_toolbar = (~inject, model: Model.t) => {
+  let button = (label, action) =>
+    Node.button(
+      ~attrs=Attr.[type_("button"), on_click(_ => inject(action))],
+      [Node.text(label)],
+    );
+  let controls = [
+    Node.label([
+      Node.text("Language ID "),
+      Node.input(
+        ~attrs=Attr.[
+          id("source-language"),
+          type_("text"),
+          value(model.source_language),
+          on_input((_, value) => inject(Update.SourceLanguage(value))),
+          create("aria-label", "Language server language ID"),
+        ],
+        (),
+      ),
+    ]),
+    button("Open source…", Update.OpenSource),
+  ];
+  let navigation =
+    switch (model.source) {
+    | None => []
+    | Some(source) => [
+        button("Native editor", Update.CloseSource),
+        Node.div(
+          ~attrs=[Attr.class_("source-navigation")],
+          List.map(
+            ((label, command)) => button(label, Update.SourceCommand(command, false)),
+            [
+              ("← Token", "prevToken"),
+              ("Token →", "nextToken"),
+              ("↑ Parent", "parent"),
+              ("↓ Child", "firstChild"),
+              ("← Sibling", "prevSibling"),
+              ("Sibling →", "nextSibling"),
+            ],
+          ),
+        ),
+        Node.div(
+          ~attrs=Attr.[class_("source-status"), create("role", "status")],
+          [Node.text(source.status ++ ": " ++ source.message)],
+        ),
+        Node.div(
+          ~attrs=[Attr.class_("source-context")],
+          [Node.text(source.uri ++ " · " ++ source.focus_label ++ " · " ++ source.selection_label)],
+        ),
+        Node.div(
+          ~attrs=[Attr.class_("source-help")],
+          [Node.text("Read-only · ←/→ tokens · ↑/↓ parent/child · Alt+←/→ siblings · Shift extends selection · Shift+click sets a range · Ctrl/Cmd+C copies")],
+        ),
+      ]
+    };
+  Node.div(
+    ~attrs=[Attr.id("source-toolbar")],
+    [Node.div(~attrs=[Attr.class_("source-open")], controls)] @ navigation,
+  );
+};
+
+let page_view = (~inject, ~stored, model: Model.t) => {
+  let copy_current = () =>
+    switch (model.source) {
+    | None => copy(model.zipper.cur)
+    | Some(source) => Util.Dom.copy(source.selected_text)
+    };
   div(
     ~attrs=
       Attr.[
@@ -282,16 +339,19 @@ let view = (~inject, ~stored, model: Model.t) => {
           Effect.Ignore;
         }),
         Attr.on_copy(_ => {
-          copy(model.zipper.cur);
+          copy_current();
           Effect.Ignore;
         }),
         Attr.on_cut(_ => {
-          copy(model.zipper.cur);
-          inject(Update.PerformAction(Delete(L)));
+          copy_current();
+          Option.is_some(model.source)
+            ? Effect.Prevent_default : inject(Update.PerformAction(Delete(L)));
         }),
         Attr.on_paste(evt => {
           Js_of_ocaml.Dom.preventDefault(evt);
-          inject(Update.PerformAction(Insert(Util.Dom.paste(evt))));
+          Option.is_some(model.source)
+            ? Effect.Ignore
+            : inject(Update.PerformAction(Insert(Util.Dom.paste(evt))));
         }),
         Attr.on_mousedown(evt => {
           Util.Dom.focus_clipboard_shim();
@@ -303,7 +363,11 @@ let view = (~inject, ~stored, model: Model.t) => {
           //   ++ ", "
           //   ++ string_of_int(loc.col),
           // );
-          inject(PerformAction(Move(Jump(loc))));
+          switch (model.source) {
+          | None => inject(Update.PerformAction(Move(Jump(loc))))
+          | Some(_) =>
+            inject(Update.SourceJump(loc.row, loc.col, Js_of_ocaml.Js.to_bool(evt##.shiftKey)))
+          };
         }),
         ...on_key(~inject, ~model),
       ],
@@ -319,7 +383,14 @@ let view = (~inject, ~stored, model: Model.t) => {
         List.init(1 + stored, load_button(~inject)),
       ),
       editor_view(model),
-      History.view(model),
+      Option.is_some(model.source) ? Node.div([]) : History.view(model),
     ],
   );
 };
+
+/* Controls are outside the editor's clipboard/focus event boundary. */
+let view = (~inject, ~stored, model) =>
+  Node.div(
+    ~attrs=[Attr.class_("source-workbench")],
+    [source_toolbar(~inject, model), page_view(~inject, ~stored, model)],
+  );
