@@ -20,7 +20,13 @@ type t =
   | CloseSource
   | SourceCommand(string, bool)
   | SourceJump(int, int, bool)
-  | SourceSelectAll;
+  | SourceSelectAll
+  | SourceEditInput(string, string)
+  | SourceStartEdit
+  | SourceApplyEdit(string, string)
+  | SourceDiscardEdit
+  | SourceRecoverEdit
+  | SourceExportEdit;
 
 let is_f_key = s => Re.Str.(string_match(regexp("^F[0-9][0-9]*$"), s, 0));
 
@@ -206,10 +212,10 @@ let apply =
   | SourceLanguage(source_language) => Ok({...model, source_language})
   | OpenSource =>
     Util.SourceBridge.open_file(model.source_language);
-    Ok(model);
+    Ok({...model, source_edit_inputs: []});
   | CloseSource =>
     Util.SourceBridge.close();
-    Ok({...model, source: None});
+    Ok({...model, source: None, source_edit_inputs: []});
   | SourceCommand(name, extend) =>
     Util.SourceBridge.command(name, extend);
     Ok(model);
@@ -218,6 +224,26 @@ let apply =
     Ok(model);
   | SourceSelectAll =>
     Util.SourceBridge.select_all();
+    Ok(model);
+  | SourceEditInput(id, input) =>
+    Ok({
+      ...model,
+      source_edit_inputs: [(id, input), ...List.remove_assoc(id, model.source_edit_inputs)],
+    });
+  | SourceStartEdit =>
+    Util.SourceBridge.start_edit();
+    Ok({...model, source_edit_inputs: []});
+  | SourceApplyEdit(id, input) =>
+    Util.SourceBridge.apply_edit(id, input);
+    Ok(model);
+  | SourceDiscardEdit =>
+    Util.SourceBridge.discard_edit();
+    Ok({...model, source_edit_inputs: []});
+  | SourceRecoverEdit =>
+    Util.SourceBridge.recover_edit();
+    Ok(model);
+  | SourceExportEdit =>
+    Util.SourceBridge.export_edit();
     Ok(model);
   | Warmup =>
     Tylr_core.Walker.warmup();
@@ -252,6 +278,7 @@ let apply =
     Ok({
       ...model,
       source: None,
+      source_edit_inputs: [],
       editor: n,
       zipper: Store.load_default_syntax(n),
       history: History.empty,
