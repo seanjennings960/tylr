@@ -1,0 +1,45 @@
+name: verify edit semantics
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edit-semantics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Lean toolchain
+        shell: bash
+        env:
+          LEAN_VERSION: 4.19.0
+          LEAN_ARCHIVE_SHA256: 6fe3ce97a58f44e2b3567d455b994eacec5bfe9ae7774f2a573444480ba813fe
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lean-$LEAN_VERSION-linux.tar.zst"
+          curl --fail --location --retry 3 \
+            "https://github.com/leanprover/lean4/releases/download/v$LEAN_VERSION/lean-$LEAN_VERSION-linux.tar.zst" \
+            --output "$archive"
+          printf '%s  %s\n' "$LEAN_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
+          tar --no-same-owner --zstd -xf "$archive" -C "$RUNNER_TEMP"
+          printf '%s\n' "$RUNNER_TEMP/lean-$LEAN_VERSION-linux/bin" >> "$GITHUB_PATH"
+      - name: Check pinned version and compile proofs
+        working-directory: formal
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat lean-toolchain)" = 'leanprover/lean4:v4.19.0'
+          lean --version
+          lake build
+      - name: Audit theorem dependencies
+        working-directory: formal
+        run: lake env lean -DwarningAsError=true Audit.lean
