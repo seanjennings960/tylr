@@ -36,3 +36,14 @@ jobs:
           name: tylr-web
           path: _build/default/src/web/www/
           if-no-files-found: error
+  protocol:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python language server tests
+        run: python -m unittest discover -s server/tests -p 'test_*.py' -v
+      - run: git diff --check
