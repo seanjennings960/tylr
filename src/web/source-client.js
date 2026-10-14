@@ -249,6 +249,9 @@
       this.generation = 0;
       this.closed = false;
       this.initialized = false;
+      this.serverReady = false;
+      this.starting = null;
+      this.ending = null;
       this.queue = Promise.resolve();
     }
 
@@ -285,8 +288,13 @@
       this.emit();
     }
 
-    async start() {
-      requireValue(!this.closed && !this.sessionId, "Session already started or closed");
+    start() {
+      requireValue(!this.closed && !this.starting, "Session already started or closed");
+      this.starting = this.initialize();
+      return this.starting;
+    }
+
+    async initialize() {
       this.status = "connecting";
       this.message = "Connecting to language server…";
       this.emit();
@@ -294,7 +302,7 @@
         const session = await this.post("/session", {});
         requireValue(session && typeof session.sessionId === "string" && session.sessionId.length > 0, "Invalid language server session");
         this.sessionId = session.sessionId;
-        if (this.closed) { await this.rpc("exit", {}, true); return this; }
+        if (this.closed) return this;
         const result = await this.rpc("initialize", { processId: null,
           clientInfo: { name: "tylr-source", version: "1" }, rootUri: null,
           capabilities: { general: { positionEncodings: ["utf-16"] }, experimental: { tylrStructure: { version: 1 } } } });
@@ -302,13 +310,20 @@
         requireValue(result.capabilities?.experimental?.tylrStructure?.version === 1, "Server does not support tylr/structure version 1");
         if (this.closed) return this;
         await this.rpc("initialized", {}, true);
+        this.serverReady = true;
+        if (this.closed) return this;
         await this.rpc("textDocument/didOpen", { textDocument: {
           uri: this.uri, languageId: this.languageId, version: this.version, text: this.text,
         } }, true);
         this.initialized = true;
+        if (this.closed) return this;
         await this.refresh(this.generation);
         return this;
-      } catch (error) { this.fail(error); throw error; }
+      } catch (error) {
+        this.fail(error);
+        await this.endSession().catch(() => {});
+        throw error;
+      }
     }
 
     async refresh(generation) {
@@ -338,7 +353,10 @@
         // More recent queued changes need no intermediate structure response.
         if (generation === this.generation) await this.refresh(generation);
       };
-      this.queue = this.queue.then(work, work).catch(error => { this.fail(error); throw error; });
+      this.queue = this.queue.then(work, work).catch(error => {
+        if (generation === this.generation) this.fail(error);
+        throw error;
+      });
       return this.queue;
     }
 
@@ -350,12 +368,25 @@
       this.message = "Document closed";
       this.structure = null;
       this.emit();
+      // Wait for the handshake boundary before sending shutdown/exit, so an
+      // in-flight initialized/didOpen cannot arrive after the session was freed.
+      if (this.starting) await this.starting.catch(() => {});
       await this.queue.catch(() => {});
-      if (!this.sessionId) return;
-      try {
-        if (this.initialized) await this.rpc("textDocument/didClose", { textDocument: { uri: this.uri } }, true);
-        await this.rpc("shutdown", null);
-      } finally { await this.rpc("exit", {}, true); }
+      await this.endSession();
+    }
+
+    endSession() {
+      if (!this.sessionId) return Promise.resolve();
+      if (!this.ending) this.ending = (async () => {
+        try {
+          if (this.initialized) await this.rpc("textDocument/didClose", { textDocument: { uri: this.uri } }, true);
+          if (this.serverReady) await this.rpc("shutdown", null);
+        } finally {
+          try { await this.rpc("exit", {}, true); }
+          finally { this.initialized = false; this.serverReady = false; }
+        }
+      })();
+      return this.ending;
     }
   }
 
@@ -408,7 +439,7 @@
       anchor: index.displayPosition(state.anchor), has_selection: state.selectionStart !== state.selectionEnd };
   }
 
-  let activeSession = null, callback = null;
+  let activeSession = null, callback = null, openGeneration = 0;
   function emitBridge() {
     if (callback) callback(JSON.stringify(renderSnapshot(activeSession)));
   }
@@ -419,12 +450,17 @@
     if (activeSession) emitBridge();
   }
 
-  async function openText(options) {
+  function activateSession(session) {
     const previous = activeSession;
-    const session = new SourceSession(options);
     activeSession = session;
     session.subscribe(() => { if (activeSession === session) emitBridge(); });
     if (previous) previous.close().catch(() => {});
+  }
+
+  async function openText(options) {
+    const session = new SourceSession(options);
+    openGeneration += 1;
+    activateSession(session);
     // The session emits a visible error before rejecting. Keep that state in the UI.
     try { await session.start(); } catch (_) { /* Visible in the source pane. */ }
     return session;
@@ -437,9 +473,20 @@
     input.style.display = "none";
     input.addEventListener("cancel", () => input.remove(), { once: true });
     input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      const generation = ++openGeneration;
+      const uri = "file:///" + encodeURIComponent(file?.name || "source");
       try {
-        const file = input.files?.[0];
-        if (file) await openText({ languageId, uri: "file:///" + encodeURIComponent(file.name), text: await file.text() });
+        if (file) {
+          const text = await file.text();
+          if (generation === openGeneration) await openText({ languageId, uri, text });
+        }
+      } catch (error) {
+        if (generation === openGeneration) {
+          const failed = new SourceSession({ languageId: languageId || "unknown", uri, text: "" });
+          activateSession(failed);
+          failed.fail(new Error("Could not open source file: " + (error?.message || String(error))));
+        }
       } finally { input.remove(); }
     }, { once: true });
     document.body.append(input);
@@ -452,6 +499,8 @@
 
   function jump(row, col, extend = false) {
     if (!activeSession) return;
+    row = Math.max(0, Math.min(row, activeSession.index.lines.length - 1));
+    col = Math.max(0, col);
     const offset = activeSession.index.displayOffset(row, col);
     activeSession.selectOffsets(extend ? activeSession.anchor : offset, offset);
   }
@@ -461,6 +510,7 @@
   }
 
   async function close() {
+    openGeneration += 1;
     const session = activeSession;
     activeSession = null;
     emitBridge();

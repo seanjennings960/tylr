@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-const { sourceIndex, validateStructure, NavigationDocument, SourceSession, renderSnapshot } =
-  createRequire(import.meta.url)("../src/web/source-client.js");
+const client = createRequire(import.meta.url)("../src/web/source-client.js");
+const { sourceIndex, validateStructure, NavigationDocument, SourceSession, renderSnapshot } = client;
 
 const text = "2 + 3 * 4\r\n# note 𝒙";
 const doc = { uri: "file:///sample.py", version: 1, text };
@@ -171,10 +171,13 @@ test("HTTP transport negotiates capabilities and completes the LSP document life
 
 test("protocol and transport failures become visible without losing source", async () => {
   for (const options of [{ encoding: "utf-8" }, { wrongId: true }, { structure: () => ({ ...fixture(), version: 42 }) }]) {
-    const session = new SourceSession({ ...doc, languageId: "python", fetch: server(options).fetch });
+    const backend = server(options);
+    const session = new SourceSession({ ...doc, languageId: "python", fetch: backend.fetch });
     await assert.rejects(session.start());
     assert.equal(session.status, "error");
     assert.equal(session.text, text);
+    assert.equal(backend.messages.at(-1).message.method, "exit");
+    assert.equal(session.initialized, false);
   }
   const session = new SourceSession({ ...doc, languageId: "python", fetch: async () => ({ ok: false, status: 503 }) });
   await assert.rejects(session.start(), /HTTP 503/);
@@ -201,4 +204,63 @@ test("a late structure response cannot overwrite a newer document version", asyn
   assert.deepEqual(seen, [1, 3]);
   assert.equal(session.version, 3);
   await session.close();
+});
+
+test("closing during initialize waits for the handshake and never opens a closed document", async () => {
+  let release, reached;
+  const waiting = new Promise(resolve => { reached = resolve; });
+  const backend = server();
+  const fetch = async (url, init) => {
+    const response = await backend.fetch(url, init);
+    if (JSON.parse(init.body).method === "initialized") {
+      reached();
+      await new Promise(resolve => { release = resolve; });
+    }
+    return response;
+  };
+  const session = new SourceSession({ ...doc, languageId: "python", fetch });
+  const starting = session.start();
+  await waiting;
+  const closing = session.close();
+  assert.equal(session.status, "closed");
+  release();
+  await Promise.all([starting, closing]);
+  assert.deepEqual(backend.messages.slice(1).map(item => item.message.method), ["initialize", "initialized", "shutdown", "exit"]);
+  assert.equal(session.status, "closed");
+});
+
+test("file read failures are visible and a stale file read cannot replace a newer request", async () => {
+  const oldDocument = globalThis.document;
+  const inputs = [], snapshots = [];
+  globalThis.document = { body: { append() {} }, createElement() {
+    const input = { style: {}, handlers: {}, click() {}, removed: false,
+      addEventListener(name, handler) { this.handlers[name] = handler; },
+      remove() { this.removed = true; } };
+    inputs.push(input);
+    return input;
+  } };
+  client.start(value => snapshots.push(JSON.parse(value)));
+  try {
+    let release;
+    client.openFile("python");
+    inputs[0].files = [{ name: "slow.py", text: () => new Promise(resolve => { release = resolve; }) }];
+    const pending = inputs[0].handlers.change();
+    client.openFile("python");
+    inputs[1].files = [{ name: "denied.py", text: async () => { throw new Error("File access denied"); } }];
+    await inputs[1].handlers.change();
+    assert.equal(snapshots.at(-1).status, "error");
+    assert.match(snapshots.at(-1).message, /File access denied/);
+    assert.equal(snapshots.at(-1).uri, "file:///denied.py");
+    release("older content");
+    await pending;
+    assert.equal(snapshots.at(-1).uri, "file:///denied.py");
+    assert.ok(inputs.every(input => input.removed));
+    client.jump(-10, -10);
+    client.jump(100, 100);
+    assert.deepEqual(snapshots.at(-1).caret, { row: 0, col: 0 });
+  } finally {
+    await client.close();
+    if (oldDocument === undefined) delete globalThis.document;
+    else globalThis.document = oldDocument;
+  }
 });
