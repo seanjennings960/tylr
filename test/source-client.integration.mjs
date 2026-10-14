@@ -54,6 +54,70 @@ test("real Python LSP serves exact source, navigation, recovery, and isolated se
       }
       await session.close();
     }
+    // Editing is an explicit server-owned draft; the imported LSP source is
+    // immutable through operator/expression holes and canonical rendering.
+    const original = "2 + 3 * 4\r\n";
+    let dropReply = false, applyCount = 0;
+    const editing = new SourceSession({ endpoint, uri: "file:///expression.py", languageId: "python", text: original,
+      fetch: async (url, init) => {
+        const response = await fetch(url, init);
+        if (JSON.parse(init.body).method === "tylr/edit/apply") {
+          applyCount += 1;
+          if (dropReply) { dropReply = false; await response.json(); throw new Error("Lost response after server commit"); }
+        }
+        return response;
+      } });
+    await editing.start();
+    assert.equal(await editing.startEdit(), true);
+    assert.equal(editing.draft.text, "(2 + (3 * 4))");
+    const choose = text => {
+      const token = editing.draft.structure.tokens.find(node => editing.draft.text.slice(node.start, node.end) === text);
+      assert.ok(token, "expected rendered token " + text);
+      editing.draft.selectOffsets(token.start, token.end);
+    };
+    const action = async (label, input = "") => {
+      const offered = renderSnapshot(editing).edit_actions.find(item => item.label === label);
+      assert.ok(offered, "expected server-offered action " + label);
+      return editing.applyEdit(offered.id, input);
+    };
+    choose("+");
+    await action("Delete operator");
+    assert.equal(editing.draft.text, "(2 ◇ (3 * 4))");
+    assert.equal(editing.draft.snapshot().selectedText, "◇");
+    assert.equal(editing.exportDraft(), null);
+    await action("Fill *");
+    assert.deepEqual(editing.exportDraft(), { name: "expression.py", text: "(2 * (3 * 4))" });
+    choose("2");
+    await action("Delete expression");
+    const revision = editing.draft.version;
+    await action("Fill name", "class");
+    assert.equal(editing.draft.version, revision);
+    assert.equal(editing.editRecoverable, false);
+    assert.match(renderSnapshot(editing).edit_hint, /action rejected/);
+    await action("Fill name", "total");
+    assert.equal(editing.draft.text, "(total * (3 * 4))");
+    choose("*");
+    const beforeLost = applyCount;
+    dropReply = true;
+    await action("Delete operator");
+    assert.equal(applyCount, beforeLost + 1, "lost reply must not replay the mutation");
+    assert.equal(editing.draft.text, "(total ◇ (3 * 4))");
+    assert.equal(editing.editRecoverable, false);
+    assert.equal(editing.text, original);
+    assert.equal(editing.version, 1);
+    const sourceStructure = await editing.rpc("tylr/structure", { textDocument: { uri: editing.uri, version: 1 } });
+    assert.equal(sourceStructure.status, "ready");
+    await editing.discardEdit();
+    assert.equal(renderSnapshot(editing).source, original);
+    await editing.close();
+
+    const unsupported = new SourceSession({ endpoint, uri: "file:///call.py", languageId: "python", text: "f(2)" });
+    await unsupported.start();
+    assert.equal(await unsupported.startEdit(), false);
+    assert.equal(unsupported.draft, null);
+    assert.equal(unsupported.text, "f(2)");
+    await unsupported.close();
+
     const left = new SourceSession({ endpoint, uri: "file:///same.py", languageId: "python", text: "left = 1" });
     const right = new SourceSession({ endpoint, uri: "file:///same.py", languageId: "python", text: "right = 2" });
     await Promise.all([left.start(), right.start()]);

@@ -20,6 +20,14 @@ type segment = {
 type line = {segments: list(segment)};
 
 [@deriving yojson]
+type edit_action = {
+  id: string,
+  label: string,
+  input_label: string,
+  input_hint: string,
+};
+
+[@deriving yojson]
 type t = {
   uri: string,
   source: string,
@@ -32,6 +40,14 @@ type t = {
   caret: point,
   anchor: point,
   has_selection: bool,
+  editing: bool,
+  edit_available: bool,
+  edit_label: string,
+  edit_hint: string,
+  edit_actions: list(edit_action),
+  edit_complete: bool,
+  edit_busy: bool,
+  edit_recoverable: bool,
 };
 
 let decode = json => t_of_yojson(Yojson.Safe.from_string(json));
