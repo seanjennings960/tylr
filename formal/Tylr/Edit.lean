@@ -181,7 +181,7 @@ theorem replaceAt_preserves_wf {root replacement updated : Expr} {path : Path}
         exact ⟨rootValid.1, ih rootValid.2 changed⟩
       · obtain ⟨next, changed, rfl⟩ := result
         rename_i body
-        exact ih (root := body) rootValid changed
+        exact ih (root := body) (updated := next) rootValid changed
 
 theorem lookup_replaceAt {root replacement updated : Expr} {path : Path}
     (result : replaceAt root path replacement = some updated) :
