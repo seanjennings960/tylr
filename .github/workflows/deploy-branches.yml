@@ -36,6 +36,23 @@ jobs:
           name: tylr-web
           path: _build/default/src/web/www/
           if-no-files-found: error
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install browser test runtime
+        run: |
+          npm install --prefix "$RUNNER_TEMP/tylr-ui" playwright@1.58.2
+          "$RUNNER_TEMP/tylr-ui/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Exercise the built editor with the real language server
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/tylr-ui/node_modules/playwright
+        run: node --test test/ui-smoke.mjs
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tylr-browser-evidence
+          path: _build/ui-artifacts/
   protocol:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
