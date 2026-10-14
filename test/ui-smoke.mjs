@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -24,6 +24,7 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
   });
   const exited = once(server, "exit");
   let browser, page;
+  const errors = [];
   try {
     const endpoint = await new Promise((resolve, reject) => {
       let output = "";
@@ -41,14 +42,18 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
       permissions: ["clipboard-read", "clipboard-write"],
     });
     page = await context.newPage();
-    const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(endpoint, { waitUntil: "networkidle" });
     await page.evaluate(() => {
       // Observe what the app writes to the actual browser copy event before
       // any platform clipboard normalization (for example LF/CRLF conversion).
+      window.tylrCopyEvents = [];
       window.addEventListener("copy", event => {
         window.tylrCopiedSource = event.clipboardData.getData("text/plain");
+        window.tylrCopyEvents.push({
+          targetId: event.target.id, targetTag: event.target.tagName,
+          prevented: event.defaultPrevented, text: window.tylrCopiedSource,
+        });
       });
     });
     // Native text/carets are absolutely positioned, so its root can have zero
@@ -70,6 +75,17 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
       await page.waitForFunction(expected =>
         Array.from(document.querySelectorAll("#code-container .source-selected"), element => element.textContent).join("") === expected,
       text);
+    }
+
+    async function copySelection(expected) {
+      const previousCount = await page.evaluate(() => window.tylrCopyEvents.length);
+      await page.keyboard.press("Control+c");
+      await page.waitForFunction(count => window.tylrCopyEvents.length > count, previousCount);
+      assert.equal(await page.evaluate(() => window.tylrCopiedSource), expected);
+      // The copy-event value must remain exact; the OS clipboard may normalize
+      // newline conventions without changing what the editor wrote.
+      await page.waitForFunction(async text =>
+        (await navigator.clipboard.readText()).replaceAll("\r\n", "\n") === text.replaceAll("\r\n", "\n"), expected);
     }
 
     async function caretAt(hand, row, col) {
@@ -126,12 +142,11 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
     await page.mouse.click(metrics.x + metrics.width * 5, metrics.y + metrics.height / 2);
     await page.keyboard.up("Shift");
     await selected("2 + 3");
+    assert.equal(await page.evaluate(() => document.activeElement?.id), "clipboard-shim");
     assert.equal(await page.locator("#code-container .caret.anchor").count(), 1);
     await caretAt("focus", 0, 5);
     await caretAt("anchor", 0, 0);
-    await page.keyboard.press("Control+c");
-    await page.waitForFunction(() => window.tylrCopiedSource === "2 + 3");
-    await page.waitForFunction(async () => await navigator.clipboard.readText() === "2 + 3");
+    await copySelection("2 + 3");
     await page.screenshot({ path: path.join(artifacts, "cross-tree-selection.png"), fullPage: true });
 
     const original = "@decorator\r\ndef greet(name):\r\n\tmessage = \"𝒙\"  # retain tabs and CRLF\r\n\treturn f\"hi {name}\"\r\n";
@@ -139,12 +154,10 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
     assert.equal(await page.locator(".source-line").allTextContents().then(lines => lines.join("\n")), original.replaceAll("\r\n", "\n"));
     await page.locator("#clipboard-shim").focus();
     await page.keyboard.press("Control+a");
-    await page.keyboard.press("Control+c");
-    await page.waitForFunction(expected => window.tylrCopiedSource === expected, original);
+    await selected(original.replaceAll("\r\n", ""));
     await caretAt("focus", 4, 0);
     await caretAt("anchor", 0, 0);
-    await page.waitForFunction(async expected =>
-      (await navigator.clipboard.readText()).replaceAll("\r\n", "\n") === expected.replaceAll("\r\n", "\n"), original);
+    await copySelection(original);
     await page.keyboard.press("Delete");
     await page.keyboard.type("x");
     assert.equal(await page.locator(".source-line").allTextContents().then(lines => lines.join("\n")), original.replaceAll("\r\n", "\n"));
@@ -158,7 +171,16 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
     assert.equal(await page.locator("#code-container .code").count(), 1);
     assert.deepEqual(errors, []);
   } catch (error) {
-    if (page) await page.screenshot({ path: path.join(artifacts, "failure.png"), fullPage: true }).catch(() => {});
+    if (page) {
+      await page.screenshot({ path: path.join(artifacts, "failure.png"), fullPage: true }).catch(() => {});
+      const state = await page.evaluate(() => ({
+        activeElement: { id: document.activeElement?.id, tag: document.activeElement?.tagName },
+        copyValue: window.tylrCopiedSource ?? null,
+        copyEvents: window.tylrCopyEvents ?? [],
+        selection: Array.from(document.querySelectorAll(".source-selected"), node => node.textContent).join(""),
+      })).catch(() => null);
+      await writeFile(path.join(artifacts, "failure.json"), JSON.stringify({ state, pageErrors: errors, error: String(error) }, null, 2));
+    }
     throw error;
   } finally {
     if (browser) await browser.close();

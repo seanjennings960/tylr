@@ -375,6 +375,8 @@ let page_view = (~inject, ~stored, model: Model.t) => {
           switch (model.source) {
           | None => inject(Update.PerformAction(Move(Jump(loc))))
           | Some(_) =>
+            /* Keep the clipboard shim focused after the pointer sets a range. */
+            Js_of_ocaml.Dom.preventDefault(evt);
             inject(Update.SourceJump(loc.row, loc.col, Js_of_ocaml.Js.to_bool(evt##.shiftKey)))
           };
         }),
