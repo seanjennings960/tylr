@@ -86,6 +86,16 @@ integer values, and 100 deterministic action sequences. It compares complete
 tagged states, preserving explicit parenthesis nodes. CI also builds the Reason
 application and runs browser acceptance against the real server.
 
+At implementation commit `6488af1202c7f979540ad2ca13e8e97db31b4778`, both workflows
+passed:
+
+- [Proof, audit, strict typing, and Lean/Python conformance](https://github.com/seanjennings960/tylr/actions/runs/38584796324):
+  17 audited theorems and 9,215 matching transitions (2,765 accepted, 6,450 rejected).
+- [Compiled editor, server/client suites, and browser acceptance](https://github.com/seanjennings960/tylr/actions/runs/38584796298):
+  5 native editor tests, 42 Python server tests, 22 JavaScript tests, and both
+  browser workflows. The draft workflow covers operator/expression holes, invalid
+  name rejection, exact completed export, discard, and unsupported-source handling.
+
 ## Interaction contract
 
 Editing is a separate draft, entered explicitly from the source navigator.
