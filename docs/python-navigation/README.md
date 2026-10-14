@@ -27,7 +27,7 @@ Open <http://127.0.0.1:8765>, leave **Language ID** set to `python`, and click
 server; a document URI does not authorize the server to read files from disk.
 Use **Native editor** to return to Tylr's existing Hazel editor.
 
-The editor must be served over local HTTP, as above. Once CI succeeds, its
+The editor must be served over local HTTP, as above. The passing CI run's
 `tylr-web` artifact can replace the OCaml build step: extract it and point
 `--www` at the directory containing `index.html`.
 
@@ -88,18 +88,23 @@ with stdio framing or an isolated loopback HTTP transport. Its capability-negoti
 
 ## Verification status
 
-Local verification currently passes: **21 Python server tests**, **12 generic
-client and real client/server integration tests**, and whitespace checks. The
-changed Reason files also passed a JavaScript refmt syntax check; that is not
-OCaml type checking.
+GitHub Actions [run 38540874533](https://github.com/seanjennings960/tylr/actions/runs/38540874533)
+passed on implementation commit `53742f18c7a32cc324ca3c547788f05f33ae5c78`:
 
-**The feature's OCaml build and compiled-browser acceptance remain pending CI.**
-GitHub Actions run `38532432404` successfully built upstream Tylr and passed its
-existing native-editor tests using the new CI setup. Its protocol job failed
-because the implementation files were not yet published; this is baseline
-evidence, not feature acceptance. This environment cannot initialize opam's normal sandbox
-(`bwrap: Creating new namespace failed: Operation not permitted`), so no local
-build or UI success is claimed.
+- OCaml build of the actual editor and its existing native tests.
+- **21 Python server tests** and **13 generic client / real client-server tests**.
+- Compiled-browser acceptance against the real Python server, including source
+  clicks retaining clipboard focus and exact copy-event text.
+- Whitespace checks.
+
+The run provides `tylr-web` (the runnable app) and `tylr-browser-evidence`
+(cross-tree selection and Unicode source screenshots) artifacts. Later
+documentation-only commits do not change the verified implementation.
+
+Local Python and JavaScript tests also pass. This environment cannot initialize
+opam's normal sandbox (`bwrap: Creating new namespace failed: Operation not permitted`),
+and local browser downloads returned invalid archives. Build and browser evidence
+therefore comes from GitHub CI; no local build or browser success is claimed.
 
 ```sh
 python3 -m unittest discover -s server/tests -p 'test_*.py' -v
