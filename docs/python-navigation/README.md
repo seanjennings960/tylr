@@ -74,6 +74,8 @@ with stdio framing or an isolated loopback HTTP transport. Its capability-negoti
 
 - This is source navigation, not Python structural editing, execution, type
   checking, definition lookup or refactoring.
+- File loading uses the browser's UTF-8 decoder. Other Python source encodings
+  are not supported; source preservation refers to the decoded Unicode text.
 - Syntax errors preserve visible source and produce an explicit `unavailable`
   status; structural commands are disabled until a valid snapshot is available.
   There is no error-recovery parser or fabricated fallback tree.
@@ -91,8 +93,11 @@ client and real client/server integration tests**, and whitespace checks. The
 changed Reason files also passed a JavaScript refmt syntax check; that is not
 OCaml type checking.
 
-**The OCaml build, existing native-editor tests and compiled-browser acceptance
-remain pending CI.** This environment cannot initialize opam's normal sandbox
+**The feature's OCaml build and compiled-browser acceptance remain pending CI.**
+GitHub Actions run `38532432404` successfully built upstream Tylr and passed its
+existing native-editor tests using the new CI setup. Its protocol job failed
+because the implementation files were not yet published; this is baseline
+evidence, not feature acceptance. This environment cannot initialize opam's normal sandbox
 (`bwrap: Creating new namespace failed: Operation not permitted`), so no local
 build or UI success is claimed.
 
@@ -107,6 +112,17 @@ the Python server. That test opens files through the UI, checks token and tree
 navigation, cross-tree ranges, exact copy-event text, Unicode/CRLF preservation,
 read-only behavior, invalid-source status and returning to the native editor.
 It captures screenshots in the `tylr-browser-evidence` artifact.
+
+### Publication checkpoint
+
+The complete implementation is committed locally. The remote feature branch
+currently ends at `789d6ce0` and contains the initial CI workflow plus server
+implementation and tests. The browser security review subsequently rejected
+the source-client upload, reporting that permission was declined. Publishing
+stopped there. The editor integration, client tests, browser test, updated CI
+workflow and documentation still need publishing before feature CI can run.
+The local and browser-authored histories have different commit IDs; compare
+their trees or apply the remaining changes without overwriting the remote work.
 
 ## GNHF and implementation history
 
