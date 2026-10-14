@@ -133,5 +133,108 @@
     return { index, root, nodes, tokens, diagnostics: payload.diagnostics, status: payload.status };
   }
 
-  return { sourceIndex, validateStructure };
+  class NavigationDocument {
+    constructor({ uri, text, version = 1 }) {
+      requireValue(typeof uri === "string" && uri.length > 0 && Number.isInteger(version), "Invalid source document");
+      this.uri = uri;
+      this.text = text;
+      this.version = version;
+      this.index = sourceIndex(text);
+      this.structure = null;
+      this.anchor = 0;
+      this.focus = 0;
+      this.activeId = null;
+      this.status = "loading";
+      this.message = "Loading document structure…";
+      this.listeners = new Set();
+    }
+
+    subscribe(listener) {
+      this.listeners.add(listener);
+      listener(this.snapshot());
+      return () => this.listeners.delete(listener);
+    }
+
+    emit() {
+      const state = this.snapshot();
+      for (const listener of this.listeners) listener(state);
+    }
+
+    setStructure(payload) {
+      this.structure = validateStructure(payload, this);
+      this.index = this.structure.index;
+      this.activeId = null;
+      this.status = this.structure.status;
+      this.message = this.status === "ready" ? "Structure ready" :
+        (this.structure.diagnostics[0]?.message || "Structure unavailable for this document");
+      this.emit();
+    }
+
+    nodeAt(offset) {
+      if (!this.structure?.root) return null;
+      // At a token edge prefer the token beginning there, then the one ending there.
+      const token = this.structure.tokens.find(item => item.start <= offset && offset < item.end) ||
+        this.structure.tokens.find(item => item.end === offset);
+      if (token) return token;
+      let node = this.structure.root;
+      for (;;) {
+        const child = node.children.map(id => this.structure.nodes.get(id)).find(item => item.start <= offset && offset < item.end);
+        if (!child) return node;
+        node = child;
+      }
+    }
+
+    selectOffsets(anchor, focus) {
+      requireValue(this.index.boundary(anchor) && this.index.boundary(focus), "Invalid selection boundary");
+      this.anchor = anchor;
+      this.focus = focus;
+      this.activeId = this.nodeAt(focus)?.id || null;
+      this.emit();
+    }
+
+    navigate(direction, { extend = false } = {}) {
+      if (this.status !== "ready" || !this.structure?.root) return false;
+      const { nodes, tokens } = this.structure;
+      const current = nodes.get(this.activeId);
+      let target = null;
+      if (direction === "prevToken" || direction === "nextToken") {
+        const forward = direction === "nextToken";
+        if (current?.role === "token") {
+          target = tokens[tokens.findIndex(token => token.id === current.id) + (forward ? 1 : -1)];
+        } else if (forward) {
+          const edge = current ? current.end : this.focus;
+          target = tokens.find(token => token.start >= edge);
+        } else {
+          const edge = current ? current.start : this.focus;
+          target = tokens.findLast(token => token.end <= edge);
+        }
+      } else {
+        const node = current || this.nodeAt(this.focus);
+        if (direction === "parent") target = nodes.get(node?.parentId);
+        else if (direction === "firstChild") target = nodes.get(node?.children[0]);
+        else if (direction === "prevSibling" || direction === "nextSibling") {
+          const siblings = nodes.get(node?.parentId)?.children || [];
+          const offset = siblings.indexOf(node?.id) + (direction === "nextSibling" ? 1 : -1);
+          target = nodes.get(siblings[offset]);
+        } else throw new Error("Unknown navigation command");
+      }
+      if (!target) return false;
+      this.activeId = target.id;
+      const backward = direction === "prevToken" || direction === "prevSibling";
+      if (!extend) this.anchor = target.start;
+      this.focus = extend && backward ? target.start : target.end;
+      this.emit();
+      return true;
+    }
+
+    snapshot() {
+      const start = Math.min(this.anchor, this.focus), end = Math.max(this.anchor, this.focus);
+      return { uri: this.uri, text: this.text, version: this.version, status: this.status,
+        message: this.message, activeId: this.activeId, anchor: this.anchor, focus: this.focus,
+        selectionStart: start, selectionEnd: end, selectedText: this.text.slice(start, end),
+        diagnostics: this.structure?.diagnostics || [] };
+    }
+  }
+
+  return { sourceIndex, validateStructure, NavigationDocument };
 });
