@@ -43,3 +43,6 @@ jobs:
       - name: Audit theorem dependencies
         working-directory: formal
         run: lake env lean -DwarningAsError=true Audit.lean
+      - name: Build executable conformance oracle
+        working-directory: formal
+        run: lake build edit_oracle

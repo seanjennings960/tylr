@@ -7,3 +7,7 @@ warningAsError = true
 
 [[lean_lib]]
 name = "Tylr"
+
+[[lean_exe]]
+name = "edit_oracle"
+root = "Oracle"

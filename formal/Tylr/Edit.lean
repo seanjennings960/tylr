@@ -149,10 +149,8 @@ theorem editLocal_spec (before : Expr) (action : Action) (after : Expr) :
         exact .eraseExpression
     | fillName value =>
         cases before <;> simp [editLocal] at result
-        split at result
-        · cases result
-          exact .fillName (by assumption)
-        · contradiction
+        obtain ⟨valid, rfl⟩ := result
+        exact .fillName valid
     | fillNat value =>
         cases before <;> simp [editLocal] at result
         cases result
@@ -167,7 +165,8 @@ theorem lookup_wf {root : Expr} {path : Path} {focused : Expr}
       cases root <;> cases dir <;> simp [lookup] at found
       · exact ih valid.1 found
       · exact ih valid.2 found
-      · exact ih valid found
+      · rename_i body
+        exact ih (root := body) valid found
 
 theorem replaceAt_preserves_wf {root replacement updated : Expr} {path : Path}
     (rootValid : root.WF) (replacementValid : replacement.WF)
@@ -181,13 +180,14 @@ theorem replaceAt_preserves_wf {root replacement updated : Expr} {path : Path}
       · obtain ⟨next, changed, rfl⟩ := result
         exact ⟨rootValid.1, ih rootValid.2 changed⟩
       · obtain ⟨next, changed, rfl⟩ := result
-        exact ih rootValid changed
+        rename_i body
+        exact ih (root := body) rootValid changed
 
 theorem lookup_replaceAt {root replacement updated : Expr} {path : Path}
     (result : replaceAt root path replacement = some updated) :
     lookup updated path = some replacement := by
   induction path generalizing root updated with
-  | nil => simp [replaceAt] at result; subst updated; rfl
+  | nil => simp [replaceAt] at result; subst updated; simp [lookup]
   | cons dir tail ih =>
       cases root <;> cases dir <;> simp [replaceAt] at result
       all_goals obtain ⟨next, changed, rfl⟩ := result
@@ -197,7 +197,7 @@ theorem replaceAt_exists {root focused replacement : Expr} {path : Path}
     (found : lookup root path = some focused) :
     ∃ updated, replaceAt root path replacement = some updated := by
   induction path generalizing root with
-  | nil => exact ⟨replacement, rfl⟩
+  | nil => exact ⟨replacement, by simp [replaceAt]⟩
   | cons dir tail ih =>
       cases root <;> cases dir <;> simp [lookup] at found
       all_goals obtain ⟨next, changed⟩ := ih found
@@ -207,7 +207,7 @@ theorem replaceAt_original {root focused : Expr} {path : Path}
     (found : lookup root path = some focused) :
     replaceAt root path focused = some root := by
   induction path generalizing root with
-  | nil => simp [lookup] at found; subst focused; rfl
+  | nil => simp [lookup] at found; subst focused; simp [replaceAt]
   | cons dir tail ih =>
       cases root <;> cases dir <;> simp [lookup] at found
       all_goals simp [replaceAt, ih found]
@@ -216,7 +216,7 @@ theorem replaceAt_overwrite {root first middle second : Expr} {path : Path}
     (changed : replaceAt root path first = some middle) :
     replaceAt middle path second = replaceAt root path second := by
   induction path generalizing root middle with
-  | nil => simp [replaceAt] at changed; subst middle; rfl
+  | nil => simp [replaceAt] at changed; subst middle; simp [replaceAt]
   | cons dir tail ih =>
       cases root <;> cases dir <;> simp [replaceAt] at changed
       all_goals obtain ⟨next, changed, rfl⟩ := changed
@@ -240,13 +240,13 @@ theorem edit_preserves_cursor {before after : State} {action : Action}
 theorem select_preserves_wf {before after : State} {path : Path}
     (valid : before.WF) (result : select before path = some after) : after.WF := by
   simp [select, Option.bind_eq_some] at result
-  obtain ⟨focused, found, rfl⟩ := result
-  exact ⟨valid.1, focused, found⟩
+  obtain ⟨found, rfl⟩ := result
+  exact ⟨valid.1, found⟩
 
 theorem select_preserves_root {before after : State} {path : Path}
     (result : select before path = some after) : after.root = before.root := by
   simp [select, Option.bind_eq_some] at result
-  obtain ⟨_, _, rfl⟩ := result
+  obtain ⟨_, rfl⟩ := result
   rfl
 
 /- This theorem restores the complete tree, including all context above and
