@@ -79,7 +79,7 @@ let cursor = (~font, z: Zipper.t) => {
   };
 };
 
-let view = (~font: Model.Font.t, ~zipper: Zipper.t): Node.t => {
+let view_hazel = (~font: Model.Font.t, ~zipper: Zipper.t): Node.t => {
   // P.log("--- Code.view ---");
   // P.show("z", Zipper.show(zipper));
   let c = Zipper.zip(~save_cursor=true, zipper);
@@ -93,3 +93,9 @@ let view = (~font: Model.Font.t, ~zipper: Zipper.t): Node.t => {
     [view_text(~font, c), ...cursor(~font, zipper)] @ carets(~font, c),
   );
 };
+
+let view = (~font, ~zipper, ~source: option(Model.Source.t)): Node.t =>
+  switch (source) {
+  | None => view_hazel(~font, ~zipper)
+  | Some(source) => Source.view(~font, source)
+  };

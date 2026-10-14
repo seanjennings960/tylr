@@ -9,6 +9,8 @@ type point = {row: int, col: int};
 type segment = {
   text: string,
   start: int,
+  col: int,
+  width: int,
   selected: bool,
   active: bool,
   role: string,
