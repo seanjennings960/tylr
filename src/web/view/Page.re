@@ -257,11 +257,105 @@ let load_button = (~inject, idx) => {
 };
 
 let source_toolbar = (~inject, model: Model.t) => {
-  let button = (label, action) =>
+  let button = (~disabled=false, label, action) =>
     Node.button(
-      ~attrs=Attr.[type_("button"), on_click(_ => inject(action))],
+      ~attrs=[Attr.type_("button"), Attr.on_click(_ => inject(action))]
+             @ (disabled ? [Attr.disabled] : []),
       [Node.text(label)],
     );
+  let edit_controls = (source: Model.Source.t) => {
+    let blocked = source.edit_busy || source.edit_recoverable;
+    let actions =
+      source.edit_actions
+      |> List.map((action: Model.Source.edit_action) => {
+           let input =
+             action.input_label == ""
+               ? ""
+               : Option.value(
+                   List.assoc_opt(action.id, model.source_edit_inputs),
+                   ~default="",
+                 );
+           let field =
+             action.input_label == ""
+               ? []
+               : [
+                   Node.label([
+                     Node.text(action.input_label ++ " "),
+                     Node.input(
+                       ~attrs=[
+                         Attr.type_("text"),
+                         Attr.value_prop(input),
+                         Attr.placeholder(action.input_hint),
+                         Attr.create("aria-label", action.input_label),
+                         Attr.create("data-edit-input", action.id),
+                         Attr.on_input((_, value) =>
+                           inject(Update.SourceEditInput(action.id, value))
+                         ),
+                       ] @ (blocked ? [Attr.disabled] : []),
+                       (),
+                     ),
+                   ]),
+                 ];
+           Node.div(
+             ~key=action.id,
+             ~attrs=[
+               Attr.class_("source-edit-action"),
+               Attr.create("data-edit-action", action.id),
+             ],
+             field @ [
+               button(
+                 ~disabled=blocked,
+                 action.label,
+                 Update.SourceApplyEdit(action.id, input),
+               ),
+             ],
+           );
+         });
+    if (source.editing) {
+      [Node.div(
+        ~attrs=[Attr.class_("source-edit")],
+        [
+          Node.div(
+            ~attrs=[Attr.class_("source-edit-heading")],
+            [Node.text(source.edit_label)],
+          ),
+          Node.div(
+            ~attrs=[Attr.class_("source-edit-hint")],
+            [Node.text(source.edit_hint)],
+          ),
+          Node.div(~attrs=[Attr.class_("source-edit-actions")], actions),
+          Node.div(
+            ~attrs=[Attr.class_("source-edit-actions")],
+            [
+              button("Discard draft", Update.SourceDiscardEdit),
+              button(
+                ~disabled=blocked || !source.edit_complete,
+                "Export draft",
+                Update.SourceExportEdit,
+              ),
+            ] @ (
+              source.edit_recoverable
+                ? [button(~disabled=source.edit_busy, "Recover draft", Update.SourceRecoverEdit)]
+                : []
+            ),
+          ),
+        ],
+      )];
+    } else if (source.edit_available) {
+      [Node.div(
+        ~attrs=[Attr.class_("source-edit")],
+        [
+          button(~disabled=source.edit_busy, source.edit_label, Update.SourceStartEdit),
+          Node.div(
+            ~attrs=[Attr.class_("source-edit-hint")],
+            [Node.text(source.edit_hint)],
+          ),
+        ],
+      )];
+    } else {
+      [];
+    };
+  };
   let controls = [
     Node.label([
       Node.text("Language ID "),
@@ -286,7 +380,8 @@ let source_toolbar = (~inject, model: Model.t) => {
         Node.div(
           ~attrs=[Attr.class_("source-navigation")],
           List.map(
-            ((label, command)) => button(label, Update.SourceCommand(command, false)),
+            ((label, command)) =>
+              button(~disabled=source.edit_busy, label, Update.SourceCommand(command, false)),
             [
               ("← Token", "prevToken"),
               ("Token →", "nextToken"),
@@ -307,9 +402,12 @@ let source_toolbar = (~inject, model: Model.t) => {
         ),
         Node.div(
           ~attrs=[Attr.class_("source-help")],
-          [Node.text("Read-only · ←/→ tokens · ↑/↓ parent/child · Alt+←/→ siblings · Shift extends selection · Shift+click sets a range · Ctrl/Cmd+C copies")],
+          [Node.text(
+            (source.editing ? "Draft" : "Read-only")
+            ++ " · ←/→ tokens · ↑/↓ parent/child · Alt+←/→ siblings · Shift extends selection · Shift+click sets a range · Ctrl/Cmd+C copies",
+          )],
         ),
-      ]
+      ] @ edit_controls(source)
     };
   Node.div(
     ~attrs=[Attr.id("source-toolbar")],

@@ -632,6 +632,12 @@ svg {
   gap: 0.5rem;
 }
 .source-navigation { margin-top: 0.6rem; }
+.source-edit { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #53584b; }
+.source-edit-heading { font-weight: 600; }
+.source-edit-hint { color: #b8bdaf; }
+.source-edit-actions, .source-edit-action { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.source-edit-actions { margin-top: 0.5rem; }
+.source-edit-action { padding: 0.25rem 0; }
 #source-toolbar button, #source-toolbar input {
   padding: 0.3rem 0.6rem;
   color: inherit;
@@ -642,6 +648,7 @@ svg {
 }
 #source-toolbar button { cursor: pointer; }
 #source-toolbar button:hover { background: #464e3f; }
+#source-toolbar button:disabled { opacity: 0.5; cursor: default; }
 #source-toolbar input { width: 7rem; }
 .source-status { margin-top: 0.6rem; color: #c1dba5; }
 .source-context { overflow-wrap: anywhere; }
