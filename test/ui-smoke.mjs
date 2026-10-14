@@ -51,7 +51,10 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
         window.tylrCopiedSource = event.clipboardData.getData("text/plain");
       });
     });
-    await page.locator("#code-container .code").waitFor();
+    // Native text/carets are absolutely positioned, so its root can have zero
+    // height even when the application is mounted and ready for interaction.
+    await page.locator("#code-container .code").waitFor({ state: "attached" });
+    await page.getByRole("button", { name: "Open source…", exact: true }).waitFor({ state: "visible" });
     assert.equal(await page.locator("#code-container .source-code").count(), 0);
     await page.getByRole("textbox", { name: "Language server language ID" }).fill("python");
 
