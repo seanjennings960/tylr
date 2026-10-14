@@ -1,0 +1,13 @@
+name = "tylr_edit_semantics"
+version = "0.1.0"
+defaultTargets = ["Tylr"]
+
+[leanOptions]
+warningAsError = true
+
+[[lean_lib]]
+name = "Tylr"
+
+[[lean_exe]]
+name = "edit_oracle"
+root = "Oracle"
