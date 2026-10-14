@@ -69,6 +69,17 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
       text);
     }
 
+    async function caretAt(hand, row, col) {
+      const position = await page.locator(`#code-container .caret.${hand}`).evaluate((caret, target) => {
+        const box = caret.ownerSVGElement.getBoundingClientRect();
+        const line = document.querySelectorAll("#code-container .source-line")[target.row].getBoundingClientRect();
+        const font = document.getElementById("font-specimen").getBoundingClientRect();
+        return { x: box.x, y: box.y, expectedX: line.x + target.col * font.width, expectedY: line.y };
+      }, { row, col });
+      assert.ok(Math.abs(position.x - position.expectedX) < 1, `${hand} caret aligns with source column ${col}: ${JSON.stringify(position)}`);
+      assert.ok(Math.abs(position.y - position.expectedY) < 1, `${hand} caret aligns with source row ${row}: ${JSON.stringify(position)}`);
+    }
+
     const expression = "2 + 3 * 4";
     await openSource("expression.py", expression);
     assert.equal(await page.locator("#code-container").count(), 1);
@@ -113,6 +124,8 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
     await page.keyboard.up("Shift");
     await selected("2 + 3");
     assert.equal(await page.locator("#code-container .caret.anchor").count(), 1);
+    await caretAt("focus", 0, 5);
+    await caretAt("anchor", 0, 0);
     await page.keyboard.press("Control+c");
     await page.waitForFunction(() => window.tylrCopiedSource === "2 + 3");
     await page.waitForFunction(async () => await navigator.clipboard.readText() === "2 + 3");
@@ -125,6 +138,8 @@ test("existing Tylr UI navigates Python and preserves arbitrary source ranges", 
     await page.keyboard.press("Control+a");
     await page.keyboard.press("Control+c");
     await page.waitForFunction(expected => window.tylrCopiedSource === expected, original);
+    await caretAt("focus", 4, 0);
+    await caretAt("anchor", 0, 0);
     await page.waitForFunction(async expected =>
       (await navigator.clipboard.readText()).replaceAll("\r\n", "\n") === expected.replaceAll("\r\n", "\n"), original);
     await page.keyboard.press("Delete");

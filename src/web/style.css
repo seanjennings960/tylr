@@ -656,6 +656,7 @@ svg {
 .source-selected { background: #415868; color: #fff; }
 .source-active { text-decoration: underline; text-decoration-color: #a6c98b; }
 .source-code > svg { pointer-events: none; overflow: visible; }
+.source-code > .caret-container { position: absolute; top: 0; left: 0; }
 .source-tile {
   fill: none;
   stroke: #68785b;
