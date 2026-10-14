@@ -365,5 +365,108 @@
     return session;
   }
 
-  return { sourceIndex, validateStructure, NavigationDocument, SourceSession, open };
+  // The adapter feeds the existing Reason model and SVG/text rendering pipeline.
+  // It creates no editor DOM and never rewrites the source into pretty-printed text.
+  function renderSnapshot(document) {
+    if (!document) return { uri: "", source: "", status: "closed", message: "", focus_label: "",
+      selection_label: "", selected_text: "", lines: [], caret: { row: 0, col: 0 },
+      anchor: { row: 0, col: 0 }, has_selection: false };
+    const state = document.snapshot(), index = document.index;
+    const active = document.structure?.nodes.get(document.activeId);
+    const tokens = document.structure?.tokens || [];
+    let tokenCursor = 0;
+    const lines = index.lines.map(line => {
+      while (tokenCursor < tokens.length && tokens[tokenCursor].end <= line.start) tokenCursor += 1;
+      const lineTokens = [];
+      for (let i = tokenCursor; i < tokens.length && tokens[i].start < line.end; i += 1) lineTokens.push(tokens[i]);
+      const edges = new Set([line.start, line.end]);
+      for (const range of [...lineTokens, active, { start: state.selectionStart, end: state.selectionEnd }]) {
+        if (!range) continue;
+        if (range.start > line.start && range.start < line.end) edges.add(range.start);
+        if (range.end > line.start && range.end < line.end) edges.add(range.end);
+      }
+      const boundaries = [...edges].sort((a, b) => a - b), segments = [];
+      let col = 0, tokenIndex = 0;
+      for (let i = 0; i < boundaries.length - 1; i += 1) {
+        const start = boundaries[i], end = boundaries[i + 1], text = document.text.slice(start, end);
+        const firstCol = col;
+        for (const char of text) col += char === "\t" ? 4 - col % 4 : 1;
+        while (tokenIndex < lineTokens.length && lineTokens[tokenIndex].end <= start) tokenIndex += 1;
+        const token = lineTokens[tokenIndex];
+        segments.push({ text, start, col: firstCol, width: col - firstCol,
+          selected: start >= state.selectionStart && end <= state.selectionEnd && state.selectionStart !== state.selectionEnd,
+          active: !!active && start >= active.start && end <= active.end,
+          role: token && start >= token.start && end <= token.end ? "token" : "" });
+      }
+      if (segments.length === 0) segments.push({ text: "", start: line.start, col: 0, width: 0, selected: false, active: false, role: "" });
+      return { segments };
+    });
+    const a = index.position(state.selectionStart), b = index.position(state.selectionEnd);
+    return { uri: state.uri, source: state.text, status: state.status, message: state.message,
+      focus_label: active?.label || "", selection_label: (a.line + 1) + ":" + (a.character + 1) + "–" + (b.line + 1) + ":" + (b.character + 1),
+      selected_text: state.selectedText, lines, caret: index.displayPosition(state.focus),
+      anchor: index.displayPosition(state.anchor), has_selection: state.selectionStart !== state.selectionEnd };
+  }
+
+  let activeSession = null, callback = null;
+  function emitBridge() {
+    if (callback) callback(JSON.stringify(renderSnapshot(activeSession)));
+  }
+
+  function start(listener) {
+    requireValue(typeof listener === "function", "Missing source snapshot listener");
+    callback = listener;
+    if (activeSession) emitBridge();
+  }
+
+  async function openText(options) {
+    const previous = activeSession;
+    const session = new SourceSession(options);
+    activeSession = session;
+    session.subscribe(() => { if (activeSession === session) emitBridge(); });
+    if (previous) previous.close().catch(() => {});
+    // The session emits a visible error before rejecting. Keep that state in the UI.
+    try { await session.start(); } catch (_) { /* Visible in the source pane. */ }
+    return session;
+  }
+
+  function openFile(languageId) {
+    requireValue(typeof document !== "undefined", "File picker requires a browser");
+    const input = document.createElement("input");
+    input.type = "file";
+    input.style.display = "none";
+    input.addEventListener("cancel", () => input.remove(), { once: true });
+    input.addEventListener("change", async () => {
+      try {
+        const file = input.files?.[0];
+        if (file) await openText({ languageId, uri: "file:///" + encodeURIComponent(file.name), text: await file.text() });
+      } finally { input.remove(); }
+    }, { once: true });
+    document.body.append(input);
+    input.click();
+  }
+
+  function command(direction, extend = false) {
+    return activeSession?.navigate(direction, { extend }) || false;
+  }
+
+  function jump(row, col, extend = false) {
+    if (!activeSession) return;
+    const offset = activeSession.index.displayOffset(row, col);
+    activeSession.selectOffsets(extend ? activeSession.anchor : offset, offset);
+  }
+
+  function selectAll() {
+    if (activeSession) activeSession.selectOffsets(0, activeSession.text.length);
+  }
+
+  async function close() {
+    const session = activeSession;
+    activeSession = null;
+    emitBridge();
+    if (session) await session.close().catch(() => {});
+  }
+
+  return { sourceIndex, validateStructure, NavigationDocument, SourceSession, open, renderSnapshot,
+    start, openText, openFile, command, jump, selectAll, close };
 });
