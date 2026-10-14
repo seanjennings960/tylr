@@ -30,6 +30,12 @@ jobs:
         run: opam exec -- dune build src --profile release
       - name: Test existing editor
         run: opam exec -- dune runtest --force
+      - name: Upload runnable editor
+        uses: actions/upload-artifact@v4
+        with:
+          name: tylr-web
+          path: _build/default/src/web/www/
+          if-no-files-found: error
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -47,12 +53,6 @@ jobs:
         with:
           name: tylr-browser-evidence
           path: _build/ui-artifacts/
-      - name: Upload runnable editor
-        uses: actions/upload-artifact@v4
-        with:
-          name: tylr-web
-          path: _build/default/src/web/www/
-          if-no-files-found: error
   protocol:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
